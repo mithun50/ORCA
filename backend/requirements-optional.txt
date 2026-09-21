@@ -1,0 +1,6 @@
+# Optional. The prototype runs fully without these: the vector RAG falls back to
+# a pure-Python BM25 index and the LLM layer falls back to deterministic
+# templates. Install these to enable dense retrieval and a hosted/local LLM.
+qdrant-client==1.12.2
+sentence-transformers==3.3.1
+psycopg[binary]==3.2.3

@@ -1,0 +1,65 @@
+# ORCA prototype stack.
+#
+#   docker compose up -d n8n          # n8n only, API run locally with uvicorn
+#   docker compose up -d              # n8n + the API in a container
+#
+# The n8n container reaches a locally running API through
+# host.docker.internal, which is what ORCA_API_BASE defaults to inside the
+# workflow. If you run the API in this compose project instead, set
+# ORCA_API_BASE=http://api:8000 in the n8n environment below.
+
+services:
+  n8n:
+    image: n8nio/n8n:1.72.1
+    container_name: orca-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      # Local prototype only. Turn auth on before exposing this anywhere.
+      - N8N_SECURE_COOKIE=false
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_PERSONALIZATION_ENABLED=false
+      - N8N_RUNNERS_ENABLED=true
+      - GENERIC_TIMEZONE=Asia/Kolkata
+      - TZ=Asia/Kolkata
+      # Where the n8n HTTP nodes should reach the ORCA API.
+      - ORCA_API_BASE=http://host.docker.internal:8017
+      # Allow the workflow's Code node to be edited and run.
+      - NODE_FUNCTION_ALLOW_BUILTIN=*
+    volumes:
+      - n8n_data:/home/node/.n8n
+      # Workflow JSON is mounted read-only so you can import it from the UI:
+      # Workflows -> Import from file -> /workflows/orca_router.json
+      - ./n8n/workflows:/workflows:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: orca-api
+    restart: unless-stopped
+    profiles: ["full"]
+    ports:
+      - "8017:8000"
+    environment:
+      - ORCA_HOST=0.0.0.0
+      - ORCA_PORT=8000
+      - ORCA_N8N_BASE=http://n8n:5678
+      - ORCA_CORS_ORIGINS=http://localhost:8017,http://127.0.0.1:8017
+      # Point at a local Ollama on the host for LLM phrasing, optional.
+      - ORCA_OLLAMA_BASE=http://host.docker.internal:11434
+    volumes:
+      - ./knowledge:/app/knowledge:ro
+      - ./data:/app/data
+      - orca_cache:/app/.cache
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - n8n
+
+volumes:
+  n8n_data:
+  orca_cache:

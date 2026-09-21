@@ -1,0 +1,162 @@
+{
+  "type": "FeatureCollection",
+  "name": "orca_marine_zones_seed",
+  "metadata": {
+    "purpose": "Geofencing demonstration layer for the ORCA prototype.",
+    "accuracy_warning": "All geometries here are APPROXIMATE simplified envelopes hand-built for the prototype. They are indicative only. They are NOT survey-grade, NOT gazetted boundaries and MUST NOT be used for navigation, enforcement or legal position fixing. Production deployment must replace this file with the gazetted notifications (MoEFCC for protected areas, Survey of India / NHO chart data for maritime boundaries, INCOIS GeoServer layers for EEZ and IMBL).",
+    "sources_to_use_in_production": [
+      "MoEFCC protected area notifications / WDPA (Protected Planet)",
+      "National Hydrographic Office (NHO) charts for IMBL and restricted areas",
+      "INCOIS geoportal EEZ and IMBL layers",
+      "ISRO Bhuvan coastal regulation zone layers"
+    ]
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "mpa-gulf-of-mannar",
+        "name": "Gulf of Mannar Marine National Park",
+        "kind": "mpa",
+        "authority": "MoEFCC / Tamil Nadu Forest Department",
+        "advisory": "Core marine national park. Fishing, anchoring and coral collection are restricted. Keep clear of the island chain.",
+        "warn_buffer_km": 5,
+        "approximate": true
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[78.12, 8.82], [79.22, 9.26], [79.28, 9.12], [78.18, 8.70], [78.12, 8.82]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "mpa-gulf-of-kachchh",
+        "name": "Marine National Park and Sanctuary, Gulf of Kachchh",
+        "kind": "mpa",
+        "authority": "MoEFCC / Gujarat Forest Department",
+        "advisory": "India's first marine national park. Coral and mangrove protection area; entry and fishing are regulated.",
+        "warn_buffer_km": 5,
+        "approximate": true
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[69.00, 22.28], [70.05, 22.28], [70.05, 22.72], [69.00, 22.72], [69.00, 22.28]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "mpa-gahirmatha",
+        "name": "Gahirmatha Marine Sanctuary (Bhitarkanika)",
+        "kind": "mpa",
+        "authority": "MoEFCC / Odisha Forest Department",
+        "advisory": "Olive ridley turtle mass-nesting sanctuary. Seasonal fishing ban with mandatory turtle excluder devices; a no-fishing core zone applies.",
+        "warn_buffer_km": 8,
+        "approximate": true
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[86.78, 20.28], [87.12, 20.28], [87.12, 20.82], [86.78, 20.82], [86.78, 20.28]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "mpa-malvan",
+        "name": "Malvan Marine Sanctuary",
+        "kind": "mpa",
+        "authority": "MoEFCC / Maharashtra Forest Department",
+        "advisory": "Coral and rocky-reef sanctuary off Sindhudurg. Trawling prohibited.",
+        "warn_buffer_km": 3,
+        "approximate": true
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[73.40, 15.98], [73.52, 15.98], [73.52, 16.12], [73.40, 16.12], [73.40, 15.98]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "mpa-wandoor",
+        "name": "Mahatma Gandhi Marine National Park, Wandoor",
+        "kind": "mpa",
+        "authority": "MoEFCC / Andaman and Nicobar Administration",
+        "advisory": "Coral reef national park. Permit required; fishing prohibited in the core zone.",
+        "warn_buffer_km": 4,
+        "approximate": true
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[92.50, 11.48], [92.72, 11.48], [92.72, 11.70], [92.50, 11.70], [92.50, 11.48]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "eco-sundarbans",
+        "name": "Sundarbans ecologically sensitive zone",
+        "kind": "eco-sensitive",
+        "authority": "MoEFCC / West Bengal Forest Department",
+        "advisory": "Mangrove biosphere reserve and tiger reserve waters. Entry permits and channel restrictions apply.",
+        "warn_buffer_km": 6,
+        "approximate": true
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[88.30, 21.52], [89.08, 21.52], [89.08, 22.10], [88.30, 22.10], [88.30, 21.52]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "restricted-sriharikota",
+        "name": "SDSC Sriharikota launch hazard area",
+        "kind": "restricted",
+        "authority": "ISRO / Indian Navy NAVAREA notices",
+        "advisory": "Rocket launch hazard area. Closed to all craft when a NAVAREA warning is in force. Always check the current NAVAREA VIII notice before transiting.",
+        "warn_buffer_km": 10,
+        "approximate": true
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[80.22, 13.55], [80.85, 13.55], [80.85, 14.05], [80.22, 14.05], [80.22, 13.55]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "imbl-india-sri-lanka",
+        "name": "India - Sri Lanka International Maritime Boundary Line (indicative)",
+        "kind": "imbl",
+        "authority": "Survey of India / National Hydrographic Office",
+        "advisory": "Crossing the IMBL exposes the vessel and crew to arrest by the Sri Lanka Navy. Palk Bay is the most common arrest location for Indian fishing boats. Turn back well before this line.",
+        "warn_buffer_km": 12,
+        "approximate": true,
+        "danger": true
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[80.05, 10.13], [79.82, 10.00], [79.62, 9.86], [79.52, 9.66], [79.42, 9.42], [79.30, 9.16], [79.08, 8.90], [78.78, 8.52], [78.35, 7.98]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "imbl-india-bangladesh",
+        "name": "India - Bangladesh maritime boundary (indicative)",
+        "kind": "imbl",
+        "authority": "Survey of India / 2014 UNCLOS Annex VII award",
+        "advisory": "Indicative course of the delimited boundary in the northern Bay of Bengal. Do not rely on this geometry for position fixing.",
+        "warn_buffer_km": 12,
+        "approximate": true,
+        "danger": true
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[89.10, 21.65], [89.05, 21.20], [88.98, 20.70], [88.92, 20.10], [88.88, 19.40]]
+      }
+    }
+  ]
+}

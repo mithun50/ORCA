@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ORCA runtime caches. Everything here is re-fetched from the upstream
+# agency services on first request, so it must not be committed.
+.cache/
+data/layers/india_eez.geojson
+
+# Secrets. Only .env.example belongs in git.
+.env
+.env.local
+*.key
+*.pem
+
+# Node, if a build-step frontend is added later
+node_modules/
+dist/
+build/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Logs
+*.log

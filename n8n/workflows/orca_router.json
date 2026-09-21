@@ -1,0 +1,276 @@
+{
+  "name": "ORCA router - segregate input and route to knowledge source",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "orca-router",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "Chat in",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-1120, 400],
+      "webhookId": "orca-router"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ORCA_API_BASE || 'http://host.docker.internal:8017' }}/internal/classify",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ message: $json.body.message, session_id: $json.body.session_id || 'n8n', lat: $json.body.lat ?? null, lon: $json.body.lon ?? null, place: $json.body.place ?? null, destination: $json.body.destination ?? null }) }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "classify",
+      "name": "1. Segregate intent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-900, 400],
+      "notes": "Weighted keyword rules, LLM only when unsure. Returns intent + the knowledge sources that can answer it."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "a1", "name": "message", "value": "={{ $json.message }}", "type": "string" },
+            { "id": "a2", "name": "session_id", "value": "={{ $json.session_id }}", "type": "string" },
+            { "id": "a3", "name": "intent", "value": "={{ $json.intent }}", "type": "string" },
+            { "id": "a4", "name": "confidence", "value": "={{ $json.confidence }}", "type": "number" },
+            { "id": "a5", "name": "domains", "value": "={{ $json.domains }}", "type": "array" },
+            { "id": "a6", "name": "lat", "value": "={{ $json.location ? $json.location.lat : null }}", "type": "number" },
+            { "id": "a7", "name": "lon", "value": "={{ $json.location ? $json.location.lon : null }}", "type": "number" },
+            { "id": "a8", "name": "place", "value": "={{ $json.location ? $json.location.name : '' }}", "type": "string" },
+            { "id": "a9", "name": "destination", "value": "={{ $json.destination ? $json.destination.name : '' }}", "type": "string" },
+            { "id": "a10", "name": "classify_trace", "value": "={{ $json.trace }}", "type": "array" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "context",
+      "name": "Carry context",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-690, 400]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "domains",
+        "include": "allOtherFields",
+        "options": {}
+      },
+      "id": "fanout",
+      "name": "2. Fan out one item per knowledge source",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [-480, 400],
+      "notes": "The classifier said which sources are relevant. One item per source so the Switch can send each down its own branch."
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            { "conditions": { "options": { "caseSensitive": true, "version": 2 }, "conditions": [ { "id": "c1", "leftValue": "={{ $json.domains }}", "rightValue": "ocean", "operator": { "type": "string", "operation": "equals" } } ], "combinator": "and" }, "renameOutput": true, "outputKey": "ocean" },
+            { "conditions": { "options": { "caseSensitive": true, "version": 2 }, "conditions": [ { "id": "c2", "leftValue": "={{ $json.domains }}", "rightValue": "weather", "operator": { "type": "string", "operation": "equals" } } ], "combinator": "and" }, "renameOutput": true, "outputKey": "weather" },
+            { "conditions": { "options": { "caseSensitive": true, "version": 2 }, "conditions": [ { "id": "c3", "leftValue": "={{ $json.domains }}", "rightValue": "geospatial", "operator": { "type": "string", "operation": "equals" } } ], "combinator": "and" }, "renameOutput": true, "outputKey": "geospatial" },
+            { "conditions": { "options": { "caseSensitive": true, "version": 2 }, "conditions": [ { "id": "c4", "leftValue": "={{ $json.domains }}", "rightValue": "hazard", "operator": { "type": "string", "operation": "equals" } } ], "combinator": "and" }, "renameOutput": true, "outputKey": "hazard" },
+            { "conditions": { "options": { "caseSensitive": true, "version": 2 }, "conditions": [ { "id": "c5", "leftValue": "={{ $json.domains }}", "rightValue": "advisory", "operator": { "type": "string", "operation": "equals" } } ], "combinator": "and" }, "renameOutput": true, "outputKey": "advisory" },
+            { "conditions": { "options": { "caseSensitive": true, "version": 2 }, "conditions": [ { "id": "c6", "leftValue": "={{ $json.domains }}", "rightValue": "catalog", "operator": { "type": "string", "operation": "equals" } } ], "combinator": "and" }, "renameOutput": true, "outputKey": "catalog" }
+          ]
+        },
+        "options": { "fallbackOutput": "none" }
+      },
+      "id": "switch",
+      "name": "3. Route to the matching knowledge source",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [-260, 400],
+      "notes": "This is the segregation point. Each branch is one RAG / retriever: ocean grids, weather, geospatial, hazards, advisory documents, dataset catalogue."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ORCA_API_BASE || 'http://host.docker.internal:8017' }}/internal/retrieve/ocean",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ message: $json.message, session_id: $json.session_id, intent: $json.intent, lat: $json.lat, lon: $json.lon, place: $json.place, destination: $json.destination }) }}",
+        "options": { "timeout": 240000 }
+      },
+      "id": "r-ocean",
+      "name": "RAG: ocean state (ISRO OSF)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [60, 40],
+      "notes": "MOSDAC THREDDS OSF_CIRC and OSF_WAVE: SST, salinity, mixed layer, currents, waves."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ORCA_API_BASE || 'http://host.docker.internal:8017' }}/internal/retrieve/weather",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ message: $json.message, session_id: $json.session_id, intent: $json.intent, lat: $json.lat, lon: $json.lon, place: $json.place }) }}",
+        "options": { "timeout": 240000 }
+      },
+      "id": "r-weather",
+      "name": "RAG: marine weather",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [60, 190]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ORCA_API_BASE || 'http://host.docker.internal:8017' }}/internal/retrieve/geospatial",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ message: $json.message, session_id: $json.session_id, intent: $json.intent, lat: $json.lat, lon: $json.lon, place: $json.place }) }}",
+        "options": { "timeout": 240000 }
+      },
+      "id": "r-geo",
+      "name": "RAG: geospatial / geofence",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [60, 340],
+      "notes": "EEZ, IMBL, marine protected areas, nearest harbour. Spatial retrieval, ranked by distance."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ORCA_API_BASE || 'http://host.docker.internal:8017' }}/internal/retrieve/hazard",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ message: $json.message, session_id: $json.session_id, intent: $json.intent, lat: $json.lat, lon: $json.lon, place: $json.place }) }}",
+        "options": { "timeout": 240000 }
+      },
+      "id": "r-hazard",
+      "name": "RAG: hazards and alerts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [60, 490]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ORCA_API_BASE || 'http://host.docker.internal:8017' }}/internal/retrieve/advisory",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ message: $json.message, session_id: $json.session_id, intent: $json.intent, lat: $json.lat, lon: $json.lon, place: $json.place }) }}",
+        "options": { "timeout": 240000 }
+      },
+      "id": "r-advisory",
+      "name": "RAG: advisory documents (vector)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [60, 640],
+      "notes": "Document RAG over live IMD warnings, INCOIS PFZ page and the seeded advisory corpus."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ORCA_API_BASE || 'http://host.docker.internal:8017' }}/internal/retrieve/catalog",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ message: $json.message, session_id: $json.session_id, intent: $json.intent, lat: $json.lat, lon: $json.lon, place: $json.place }) }}",
+        "options": { "timeout": 240000 }
+      },
+      "id": "r-catalog",
+      "name": "RAG: dataset catalogue",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [60, 790]
+    },
+    {
+      "parameters": {
+        "numberInputs": 6,
+        "options": {}
+      },
+      "id": "merge",
+      "name": "4. Merge retrieved knowledge",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [400, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Collapse every retrieval branch into one payload for synthesis.\n// Each branch returned { domain, agent, findings, evidence, trace }.\nconst ctx = $('Carry context').first().json;\n\nconst findings = [];\nconst evidence = [];\nconst trace = [...(ctx.classify_trace || [])];\nconst domainsUsed = [];\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  if (j.domain) domainsUsed.push(j.domain);\n  if (j.findings && Object.keys(j.findings).length) findings.push(j.findings);\n  if (Array.isArray(j.evidence)) evidence.push(...j.evidence);\n  if (Array.isArray(j.trace)) trace.push(...j.trace);\n}\n\n// de-duplicate evidence by id; branches share the planner pass so overlap happens\nconst seen = new Set();\nconst uniqueEvidence = [];\nfor (const e of evidence) {\n  if (!e || !e.id || seen.has(e.id)) continue;\n  seen.add(e.id);\n  uniqueEvidence.push(e);\n}\n\n// renumber the trace so the reasoning panel reads in order\ntrace.forEach((step, i) => { if (step) step.seq = i + 1; });\n\nreturn [{\n  json: {\n    message: ctx.message,\n    session_id: ctx.session_id,\n    lat: ctx.lat,\n    lon: ctx.lon,\n    place: ctx.place,\n    destination: ctx.destination || null,\n    intent: ctx.intent,\n    domains_used: domainsUsed,\n    findings,\n    evidence: uniqueEvidence,\n    trace,\n  }\n}];"
+      },
+      "id": "collate",
+      "name": "Collate findings and evidence",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [620, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ORCA_API_BASE || 'http://host.docker.internal:8017' }}/internal/synthesize",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": { "timeout": 240000 }
+      },
+      "id": "synthesize",
+      "name": "5. Assess risk and synthesise with the LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [840, 400],
+      "notes": "Applies the safety threshold rules over the merged evidence, then drafts the answer and lets the LLM rephrase it without touching the numbers or the verdict."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "respond",
+      "name": "Answer out",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1060, 400]
+    },
+    {
+      "parameters": {
+        "content": "## ORCA request router\n\n**Flow:** chat in -> segregate intent -> fan out -> route to the matching knowledge source -> retrieve -> merge -> risk rules + LLM -> answer out.\n\nThe Switch node is the segregation point. Each branch is a different retriever:\n\n| branch | reads |\n|---|---|\n| ocean | MOSDAC THREDDS OSF_CIRC / OSF_WAVE (ISRO) |\n| weather | wind, gust, rain, CAPE, tide |\n| geospatial | EEZ, IMBL, protected areas, harbours |\n| hazard | GDACS cyclone geometry + IMD warning text |\n| advisory | document RAG over IMD / INCOIS bulletins |\n| catalog | MOSDAC + INCOIS ERDDAP + NASA CMR catalogues |\n\n**Setup**\n1. Set the `ORCA_API_BASE` environment variable in the n8n container. On Docker Desktop use `http://host.docker.internal:8017`. If the API runs in the same compose project use `http://api:8000`.\n2. Activate the workflow, then point the backend at it with `ORCA_N8N_BASE=http://localhost:5678`.\n3. In the UI, tick \"route via n8n\".\n\nThe backend falls back to its in-process orchestrator if this workflow is not reachable, so the demo never hard-fails.",
+        "height": 620,
+        "width": 480
+      },
+      "id": "note",
+      "name": "How this works",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-1120, -300]
+    }
+  ],
+  "connections": {
+    "Chat in": { "main": [[{ "node": "1. Segregate intent", "type": "main", "index": 0 }]] },
+    "1. Segregate intent": { "main": [[{ "node": "Carry context", "type": "main", "index": 0 }]] },
+    "Carry context": { "main": [[{ "node": "2. Fan out one item per knowledge source", "type": "main", "index": 0 }]] },
+    "2. Fan out one item per knowledge source": { "main": [[{ "node": "3. Route to the matching knowledge source", "type": "main", "index": 0 }]] },
+    "3. Route to the matching knowledge source": {
+      "main": [
+        [{ "node": "RAG: ocean state (ISRO OSF)", "type": "main", "index": 0 }],
+        [{ "node": "RAG: marine weather", "type": "main", "index": 0 }],
+        [{ "node": "RAG: geospatial / geofence", "type": "main", "index": 0 }],
+        [{ "node": "RAG: hazards and alerts", "type": "main", "index": 0 }],
+        [{ "node": "RAG: advisory documents (vector)", "type": "main", "index": 0 }],
+        [{ "node": "RAG: dataset catalogue", "type": "main", "index": 0 }]
+      ]
+    },
+    "RAG: ocean state (ISRO OSF)": { "main": [[{ "node": "4. Merge retrieved knowledge", "type": "main", "index": 0 }]] },
+    "RAG: marine weather": { "main": [[{ "node": "4. Merge retrieved knowledge", "type": "main", "index": 1 }]] },
+    "RAG: geospatial / geofence": { "main": [[{ "node": "4. Merge retrieved knowledge", "type": "main", "index": 2 }]] },
+    "RAG: hazards and alerts": { "main": [[{ "node": "4. Merge retrieved knowledge", "type": "main", "index": 3 }]] },
+    "RAG: advisory documents (vector)": { "main": [[{ "node": "4. Merge retrieved knowledge", "type": "main", "index": 4 }]] },
+    "RAG: dataset catalogue": { "main": [[{ "node": "4. Merge retrieved knowledge", "type": "main", "index": 5 }]] },
+    "4. Merge retrieved knowledge": { "main": [[{ "node": "Collate findings and evidence", "type": "main", "index": 0 }]] },
+    "Collate findings and evidence": { "main": [[{ "node": "5. Assess risk and synthesise with the LLM", "type": "main", "index": 0 }]] },
+    "5. Assess risk and synthesise with the LLM": { "main": [[{ "node": "Answer out", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {},
+  "meta": { "instanceId": "orca-prototype" },
+  "tags": [{ "name": "ORCA" }]
+}

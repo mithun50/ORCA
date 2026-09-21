@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ORCA - Marine Intelligence</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root {
+    --bg: #0b1622; --panel: #12202f; --panel2: #16293c; --line: #23405a;
+    --text: #e6eef6; --muted: #8fa9c0; --accent: #2dd4bf;
+    --safe: #34d399; --caution: #fbbf24; --unsafe: #f87171; --unknown: #94a3b8;
+    --isro: #f59e0b; --incois: #38bdf8; --imd: #a78bfa; --fallback: #64748b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 "Segoe UI", system-ui, sans-serif;
+    display: grid; grid-template-rows: auto 1fr; height: 100vh;
+  }
+  header {
+    padding: 10px 18px; background: var(--panel); border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 17px; margin: 0; letter-spacing: .3px; }
+  header h1 span { color: var(--accent); }
+  .tagline { color: var(--muted); font-size: 12.5px; }
+  .status { margin-left: auto; font-size: 12px; color: var(--muted); display: flex; gap: 10px; align-items: center; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--unknown); display: inline-block; }
+  .dot.up { background: var(--safe); } .dot.down { background: var(--unsafe); }
+
+  main { display: grid; grid-template-columns: minmax(380px, 1.15fr) minmax(330px, 1fr); overflow: hidden; }
+  @media (max-width: 950px) { main { grid-template-columns: 1fr; grid-template-rows: 1fr auto; } }
+
+  .chat { display: grid; grid-template-rows: auto 1fr auto; overflow: hidden; border-right: 1px solid var(--line); }
+  .samples { padding: 8px 14px; display: flex; gap: 6px; overflow-x: auto; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .samples button {
+    white-space: nowrap; background: var(--panel2); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 14px; padding: 5px 11px;
+    font-size: 12px; cursor: pointer;
+  }
+  .samples button:hover { color: var(--text); border-color: var(--accent); }
+
+  .messages { overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { max-width: 92%; padding: 11px 14px; border-radius: 12px; white-space: pre-wrap; }
+  .msg.user { align-self: flex-end; background: #1d3b57; border: 1px solid #2b5578; }
+  .msg.bot { align-self: flex-start; background: var(--panel2); border: 1px solid var(--line); }
+  .msg.err { background: #3b1d1d; border-color: #6b2b2b; }
+
+  .meta { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 8px; }
+  .chip {
+    font-size: 11px; padding: 2px 8px; border-radius: 10px;
+    border: 1px solid var(--line); background: #0f1d2b; color: var(--muted);
+  }
+  .chip.route { border-color: var(--accent); color: var(--accent); }
+  .band { font-weight: 600; font-size: 11.5px; padding: 2px 9px; border-radius: 10px; color: #0b1622; }
+  .band.safe { background: var(--safe); } .band.caution { background: var(--caution); }
+  .band.unsafe { background: var(--unsafe); } .band.unknown { background: var(--unknown); }
+
+  .followups { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .followups button {
+    font-size: 11.5px; background: transparent; color: var(--accent);
+    border: 1px dashed #2a6f6a; border-radius: 12px; padding: 4px 9px; cursor: pointer;
+  }
+
+  form { display: flex; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--line); background: var(--panel); }
+  input[type=text] {
+    flex: 1; padding: 11px 13px; border-radius: 9px; border: 1px solid var(--line);
+    background: #0d1a27; color: var(--text); font-size: 14.5px;
+  }
+  input[type=text]:focus { outline: none; border-color: var(--accent); }
+  button.send { padding: 11px 18px; border-radius: 9px; border: 0; background: var(--accent); color: #05231f; font-weight: 600; cursor: pointer; }
+  button.send:disabled { opacity: .5; cursor: default; }
+
+  .side { display: grid; grid-template-rows: 250px auto; overflow: hidden; }
+  #map { width: 100%; height: 250px; background: #0d1a27; }
+  .panels { overflow-y: auto; padding: 12px; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  .tabs button {
+    flex: 1; padding: 7px; font-size: 12.5px; cursor: pointer;
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--line); border-radius: 7px;
+  }
+  .tabs button.on { color: #05231f; background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 10px 11px; margin-bottom: 8px; }
+  .card h4 { margin: 0 0 5px; font-size: 12.5px; font-weight: 600; }
+  .card .val { font-size: 17px; font-weight: 600; }
+  .card .src { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .tier { font-size: 10px; padding: 1px 6px; border-radius: 8px; color: #06121c; font-weight: 700; }
+  .tier.tier1-isro { background: var(--isro); } .tier.tier2-incois { background: var(--incois); }
+  .tier.tier3-imd { background: var(--imd); } .tier.tier4-fallback { background: var(--fallback); color: #e6eef6; }
+  .tier.derived, .tier.seed { background: #475569; color: #e6eef6; }
+  .caveat { font-size: 11px; color: var(--caution); margin-top: 5px; }
+  .stale { font-size: 11px; color: var(--unsafe); margin-top: 4px; }
+  .step { border-left: 2px solid var(--line); padding: 6px 0 6px 10px; margin-bottom: 4px; font-size: 12.5px; }
+  .step.ok { border-color: var(--safe); } .step.degraded { border-color: var(--caution); }
+  .step.failed { border-color: var(--unsafe); } .step.skipped { border-color: var(--unknown); }
+  .step .who { color: var(--accent); font-weight: 600; }
+  .step .why { color: var(--muted); font-size: 11.5px; font-style: italic; }
+  .step .out { color: var(--text); font-size: 11.5px; }
+  .empty { color: var(--muted); font-size: 12.5px; padding: 14px; text-align: center; }
+  .spin { display: inline-block; width: 11px; height: 11px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: s .8s linear infinite; }
+  @keyframes s { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>OR<span>CA</span></h1>
+  <div class="tagline">Marine intelligence for Indian waters - ISRO / INCOIS / IMD</div>
+  <div class="status">
+    <label style="display:flex;gap:5px;align-items:center;cursor:pointer">
+      <input type="checkbox" id="useN8n" /> route via n8n
+    </label>
+    <span><span class="dot" id="dot"></span> <span id="statusText">checking</span></span>
+  </div>
+</header>
+
+<main>
+  <section class="chat">
+    <div class="samples" id="samples"></div>
+    <div class="messages" id="messages"></div>
+    <form id="form">
+      <input type="text" id="input" autocomplete="off"
+             placeholder="Is it safe to venture out off Rameswaram tomorrow morning?" />
+      <button class="send" id="send" type="submit">Ask</button>
+    </form>
+  </section>
+
+  <aside class="side">
+    <div id="map"></div>
+    <div class="panels">
+      <div class="tabs">
+        <button data-tab="evidence" class="on">Evidence</button>
+        <button data-tab="trace">Reasoning</button>
+      </div>
+      <div id="evidence"><div class="empty">Ask something. Every number that comes back is shown here with the agency it came from.</div></div>
+      <div id="trace" style="display:none"><div class="empty">The agents' reasoning steps will appear here.</div></div>
+    </div>
+  </aside>
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const API = location.origin;
+const SESSION = 'ui-' + Math.random().toString(36).slice(2, 9);
+
+const SAMPLES = [
+  "Where is the nearest Potential Fishing Zone today near Chennai?",
+  "Is it safe to venture into the sea tomorrow morning near Rameswaram?",
+  "What are the tide, weather and sea conditions near Kochi?",
+  "Are there any lightning or cyclone alerts near Visakhapatnam?",
+  "Which regions show high chlorophyll and favourable SST off Malpe?",
+  "Safest route from Chennai to Kakinada considering sea state",
+  "Why has fish productivity declined near Nagapattinam?",
+  "Which zones should I avoid near Rameswaram?",
+];
+
+const $ = (id) => document.getElementById(id);
+let map, layerGroup;
+
+function initMap() {
+  map = L.map('map', { zoomControl: true, attributionControl: false }).setView([13.0, 80.5], 6);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    maxZoom: 12
+  }).addTo(map);
+  layerGroup = L.layerGroup().addTo(map);
+}
+
+const MARKER_COLOUR = { good: '#34d399', caution: '#fbbf24', danger: '#f87171', harbour: '#38bdf8', info: '#94a3b8', pfz: '#2dd4bf' };
+
+function renderMap(data) {
+  layerGroup.clearLayers();
+  let focus = null;
+  (data.layers || []).forEach(layer => {
+    if (layer.kind === 'markers') {
+      (layer.markers || []).forEach(m => {
+        const marker = L.circleMarker([m.lat, m.lon], {
+          radius: layer.id === 'position' ? 9 : 6,
+          color: MARKER_COLOUR[m.kind] || '#94a3b8',
+          fillColor: MARKER_COLOUR[m.kind] || '#94a3b8',
+          fillOpacity: 0.85, weight: 2
+        }).bindPopup(`<b>${m.label}</b><br>${m.detail || ''}`);
+        layerGroup.addLayer(marker);
+        if (layer.id === 'position') focus = [m.lat, m.lon];
+      });
+    } else if (layer.kind === 'geojson' && layer.geojson) {
+      layerGroup.addLayer(L.geoJSON(layer.geojson, {
+        style: f => ({
+          color: (f.properties && f.properties.colour) || '#888',
+          weight: 2, fillOpacity: 0.18
+        }),
+        onEachFeature: (f, l) => l.bindPopup(
+          `<b>${(f.properties && f.properties.name) || layer.title}</b><br>${(f.properties && f.properties.advisory) || ''}`
+        )
+      }));
+    } else if (layer.kind === 'line' && layer.geojson) {
+      layerGroup.addLayer(L.geoJSON(layer.geojson, {
+        style: f => ({
+          color: f.properties && f.properties.recommended ? '#2dd4bf' : '#64748b',
+          weight: f.properties && f.properties.recommended ? 4 : 2,
+          dashArray: f.properties && f.properties.recommended ? null : '5,6'
+        })
+      }).bindPopup(layer.legend || layer.title));
+    } else if (layer.kind === 'wms' && layer.visible_by_default && layer.url) {
+      layerGroup.addLayer(L.tileLayer.wms(layer.url, {
+        layers: layer.wms_layer, styles: layer.wms_style || '',
+        format: 'image/png', transparent: true, opacity: layer.opacity || 0.6,
+        version: '1.3.0'
+      }));
+    }
+  });
+  if (focus) map.setView(focus, 7);
+}
+
+function renderEvidence(data) {
+  const host = $('evidence');
+  const items = data.evidence || [];
+  if (!items.length) { host.innerHTML = '<div class="empty">No evidence returned.</div>'; return; }
+  const numeric = items.filter(e => e.value !== null && e.value !== undefined && e.value !== '');
+  const textual = items.filter(e => !numeric.includes(e));
+  host.innerHTML = [
+    ...numeric.map(card),
+    ...(textual.length ? ['<div class="card"><h4>Documents and advisories cited</h4>' +
+        textual.map(e =>
+          `<div style="margin:6px 0"><span class="tier ${e.provenance.tier}">${tierName(e.provenance.tier)}</span>
+           <span style="font-size:12px"> ${escape(e.label)}</span>
+           <div class="src">${escape(e.provenance.agency)}</div></div>`
+        ).join('') + '</div>'] : [])
+  ].join('');
+}
+
+function card(e) {
+  const p = e.provenance;
+  const value = typeof e.value === 'number' ? (+e.value).toFixed(2) : escape(String(e.value));
+  return `<div class="card">
+    <h4>${escape(e.label)}</h4>
+    <div class="val">${value} <span style="font-size:12px;color:var(--muted)">${escape(e.unit || '')}</span></div>
+    <div class="src"><span class="tier ${p.tier}">${tierName(p.tier)}</span> ${escape(p.agency)}
+      ${p.access_method ? ' &middot; ' + escape(p.access_method) : ''}</div>
+    ${p.is_stale ? `<div class="stale">stale: ${escape(p.staleness_note)}</div>` : ''}
+    ${p.caveat ? `<div class="caveat">${escape(p.caveat)}</div>` : ''}
+  </div>`;
+}
+
+function tierName(t) {
+  return { 'tier1-isro': 'ISRO', 'tier2-incois': 'INCOIS', 'tier3-imd': 'IMD',
+           'tier4-fallback': 'fallback', 'derived': 'derived', 'seed': 'reference' }[t] || t;
+}
+
+function renderTrace(data) {
+  const steps = data.trace || [];
+  $('trace').innerHTML = steps.length
+    ? steps.map(s => `<div class="step ${s.status}">
+        <div><span class="who">${escape(s.agent)}</span> &middot; ${escape(s.action)}
+          <span style="color:var(--muted);font-size:11px">${s.duration_ms}ms</span></div>
+        ${s.rationale ? `<div class="why">${escape(s.rationale)}</div>` : ''}
+        ${s.tool ? `<div class="out" style="color:var(--muted)">tool: ${escape(s.tool)}</div>` : ''}
+        ${s.outcome ? `<div class="out">${escape(s.outcome)}</div>` : ''}
+      </div>`).join('')
+    : '<div class="empty">No trace.</div>';
+}
+
+function escape(s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function addMessage(text, cls, extras) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + cls;
+  if (extras && extras.meta) div.innerHTML = extras.meta;
+  div.appendChild(document.createTextNode(text));
+  if (extras && extras.followups && extras.followups.length) {
+    const wrap = document.createElement('div');
+    wrap.className = 'followups';
+    extras.followups.forEach(f => {
+      const b = document.createElement('button');
+      b.textContent = f;
+      b.onclick = () => { $('input').value = f; $('form').requestSubmit(); };
+      wrap.appendChild(b);
+    });
+    div.appendChild(wrap);
+  }
+  $('messages').appendChild(div);
+  $('messages').scrollTop = $('messages').scrollHeight;
+  return div;
+}
+
+function metaHtml(data) {
+  const band = (data.risk && data.risk.band) || 'unknown';
+  const chips = [
+    `<span class="chip route">${escape(data.intent)}</span>`,
+    `<span class="chip">confidence ${(data.confidence * 100).toFixed(0)}%</span>`,
+  ];
+  if (data.risk) chips.push(`<span class="band ${band}">${band}</span>`);
+  if (data.location) chips.push(`<span class="chip">${escape(data.location.name)}</span>`);
+  if (data.window) chips.push(`<span class="chip">${escape(data.window.label)}</span>`);
+  chips.push(`<span class="chip">${(data.evidence || []).length} evidence</span>`);
+  if (data.llm_used) chips.push('<span class="chip">LLM phrasing</span>');
+  if (data.via_n8n) chips.push('<span class="chip route">via n8n</span>');
+  return `<div class="meta">${chips.join('')}</div>`;
+}
+
+async function ask(question) {
+  addMessage(question, 'user');
+  $('input').value = '';
+  $('send').disabled = true;
+  const pending = addMessage('working through the agencies...', 'bot');
+  pending.innerHTML = '<span class="spin"></span> retrieving from ISRO, INCOIS and IMD sources...';
+  try {
+    const viaN8n = $('useN8n').checked;
+    const url = viaN8n ? `${API}/chat?via=n8n` : `${API}/chat`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: question, session_id: SESSION })
+    });
+    if (!res.ok) throw new Error(`API returned ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const data = await res.json();
+    pending.remove();
+    addMessage(data.answer, 'bot', { meta: metaHtml(data), followups: data.followups });
+    renderEvidence(data); renderTrace(data); renderMap(data);
+    if ((data.degraded_sources || []).length) {
+      addMessage('Sources that degraded on this request: ' + data.degraded_sources.join(', '), 'bot');
+    }
+  } catch (err) {
+    pending.remove();
+    addMessage('Could not get an answer: ' + err.message, 'err');
+  } finally {
+    $('send').disabled = false;
+    $('input').focus();
+  }
+}
+
+async function checkHealth() {
+  try {
+    const h = await (await fetch(`${API}/health`)).json();
+    $('dot').className = 'dot up';
+    $('statusText').textContent =
+      `${h.vector_rag.chunks} docs, ${h.geo_rag.zone_features} zones, LLM ${h.llm}`;
+  } catch {
+    $('dot').className = 'dot down';
+    $('statusText').textContent = 'API unreachable';
+  }
+}
+
+SAMPLES.forEach(s => {
+  const b = document.createElement('button');
+  b.textContent = s.length > 46 ? s.slice(0, 44) + '...' : s;
+  b.title = s;
+  b.onclick = () => ask(s);
+  $('samples').appendChild(b);
+});
+
+document.querySelectorAll('.tabs button').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('on'));
+    btn.classList.add('on');
+    $('evidence').style.display = btn.dataset.tab === 'evidence' ? '' : 'none';
+    $('trace').style.display = btn.dataset.tab === 'trace' ? '' : 'none';
+  };
+});
+
+$('form').onsubmit = (e) => {
+  e.preventDefault();
+  const q = $('input').value.trim();
+  if (q) ask(q);
+};
+
+initMap();
+checkHealth();
+addMessage(
+  'I am ORCA. Ask me about sea conditions, whether it is safe to go out, tides, '
+  + 'cyclone and lightning alerts, potential fishing zones, maritime boundaries, '
+  + 'or a safe route between two harbours. Name a place or send coordinates. '
+  + 'Every answer shows the agency data behind it in the Evidence panel and the '
+  + 'agent reasoning in the Reasoning panel.',
+  'bot'
+);
+</script>
+</body>
+</html>
