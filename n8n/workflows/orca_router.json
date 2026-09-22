@@ -1,5 +1,5 @@
 {
-  "name": "ORCA router - segregate input and route to knowledge source",
+  "name": "ORCA multi-agent orchestrator",
   "nodes": [
     {
       "parameters": {
@@ -12,7 +12,7 @@
       "name": "Chat in",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [-1120, 400],
+      "position": [-1500, 400],
       "webhookId": "orca-router"
     },
     {
@@ -24,12 +24,15 @@
         "jsonBody": "={{ JSON.stringify({ message: $json.body.message, session_id: $json.body.session_id || 'n8n', lat: $json.body.lat ?? null, lon: $json.body.lon ?? null, place: $json.body.place ?? null, destination: $json.body.destination ?? null }) }}",
         "options": { "timeout": 120000 }
       },
-      "id": "classify",
-      "name": "1. Segregate intent",
+      "id": "supervisor",
+      "name": "Supervisor: segregate and plan",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [-900, 400],
-      "notes": "Weighted keyword rules, LLM only when unsure. Returns intent + the knowledge sources that can answer it."
+      "position": [-1290, 400],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "notes": "The supervisor agent. Weighted keyword rules first, GLM 5.2 arbitration only when lexical confidence < 0.55. Returns the intent, the resolved place and window, and which specialist agents can answer."
     },
     {
       "parameters": {
@@ -39,21 +42,84 @@
             { "id": "a2", "name": "session_id", "value": "={{ $json.session_id }}", "type": "string" },
             { "id": "a3", "name": "intent", "value": "={{ $json.intent }}", "type": "string" },
             { "id": "a4", "name": "confidence", "value": "={{ $json.confidence }}", "type": "number" },
-            { "id": "a5", "name": "domains", "value": "={{ $json.domains }}", "type": "array" },
-            { "id": "a6", "name": "lat", "value": "={{ $json.location ? $json.location.lat : null }}", "type": "number" },
-            { "id": "a7", "name": "lon", "value": "={{ $json.location ? $json.location.lon : null }}", "type": "number" },
-            { "id": "a8", "name": "place", "value": "={{ $json.location ? $json.location.name : '' }}", "type": "string" },
-            { "id": "a9", "name": "destination", "value": "={{ $json.destination ? $json.destination.name : '' }}", "type": "string" },
-            { "id": "a10", "name": "classify_trace", "value": "={{ $json.trace }}", "type": "array" }
+            { "id": "a5", "name": "decided_by", "value": "={{ $json.decided_by }}", "type": "string" },
+            { "id": "a6", "name": "domains", "value": "={{ $json.domains }}", "type": "array" },
+            { "id": "a7", "name": "agents", "value": "={{ $json.agents }}", "type": "array" },
+            { "id": "a8", "name": "lat", "value": "={{ $json.location ? $json.location.lat : null }}", "type": "number" },
+            { "id": "a9", "name": "lon", "value": "={{ $json.location ? $json.location.lon : null }}", "type": "number" },
+            { "id": "a10", "name": "place", "value": "={{ $json.location ? $json.location.name : '' }}", "type": "string" },
+            { "id": "a11", "name": "destination", "value": "={{ $json.destination ? $json.destination.name : '' }}", "type": "string" },
+            { "id": "a12", "name": "clarification_needed", "value": "={{ $json.clarification_needed || '' }}", "type": "string" },
+            { "id": "a13", "name": "language_hint", "value": "={{ $json.language_hint || 'en' }}", "type": "string" },
+            { "id": "a14", "name": "classify_trace", "value": "={{ $json.trace }}", "type": "array" }
           ]
         },
         "options": {}
       },
-      "id": "context",
-      "name": "Carry context",
+      "id": "blackboard",
+      "name": "Blackboard: shared context",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
-      "position": [-690, 400]
+      "position": [-1080, 400],
+      "notes": "The shared blackboard every agent reads from. Nothing downstream re-derives the plan, so the specialists cannot disagree about where or when the question is about."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "version": 2 },
+          "conditions": [
+            {
+              "id": "g1",
+              "leftValue": "={{ $json.clarification_needed }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "gate-clarify",
+      "name": "Gate: is the question answerable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-870, 400],
+      "notes": "First supervisor decision. If no position could be resolved for a question that needs one, ORCA asks instead of guessing a place. No agent runs, no upstream server is troubled."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ session_id: $json.session_id, answer: $json.clarification_needed, intent: $json.intent, confidence: $json.confidence, evidence: [], trace: $json.classify_trace, layers: [], charts: [], followups: ['Is it safe to venture out off Rameswaram tomorrow morning?', 'What are the sea conditions off Chennai now?'], degraded_sources: [], llm_used: false, language: $json.language_hint, via_n8n: true }) }}",
+        "options": {}
+      },
+      "id": "respond-clarify",
+      "name": "Ask the skipper to narrow it down",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-650, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "version": 2 },
+          "conditions": [
+            {
+              "id": "g2",
+              "leftValue": "={{ ($json.domains || []).length }}",
+              "rightValue": 0,
+              "operator": { "type": "number", "operation": "gt" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "gate-delegate",
+      "name": "Gate: does this need specialist agents?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-650, 480],
+      "notes": "Second supervisor decision. Small talk and self-description need no retrieval, so they skip straight to synthesis rather than waking six agents and six government servers."
     },
     {
       "parameters": {
@@ -61,12 +127,12 @@
         "include": "allOtherFields",
         "options": {}
       },
-      "id": "fanout",
-      "name": "2. Fan out one item per knowledge source",
+      "id": "delegate",
+      "name": "Delegate: one task per domain",
       "type": "n8n-nodes-base.splitOut",
       "typeVersion": 1,
-      "position": [-480, 400],
-      "notes": "The classifier said which sources are relevant. One item per source so the Switch can send each down its own branch."
+      "position": [-430, 560],
+      "notes": "Task decomposition. One work item per knowledge domain the supervisor named, each carrying the whole blackboard."
     },
     {
       "parameters": {
@@ -82,12 +148,12 @@
         },
         "options": { "fallbackOutput": "none" }
       },
-      "id": "switch",
-      "name": "3. Route to the matching knowledge source",
+      "id": "assign",
+      "name": "Supervisor: assign to the owning agent",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
-      "position": [-260, 400],
-      "notes": "This is the segregation point. Each branch is one RAG / retriever: ocean grids, weather, geospatial, hazards, advisory documents, dataset catalogue."
+      "position": [-210, 560],
+      "notes": "Each domain has exactly one owning agent. The six branches below run concurrently because each waits on a different government service."
     },
     {
       "parameters": {
@@ -98,12 +164,17 @@
         "jsonBody": "={{ JSON.stringify({ message: $json.message, session_id: $json.session_id, intent: $json.intent, lat: $json.lat, lon: $json.lon, place: $json.place, destination: $json.destination }) }}",
         "options": { "timeout": 240000 }
       },
-      "id": "r-ocean",
-      "name": "RAG: ocean state (ISRO OSF)",
+      "id": "a-ocean",
+      "name": "Agent: Ocean Analytics",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [60, 40],
-      "notes": "MOSDAC THREDDS OSF_CIRC and OSF_WAVE: SST, salinity, mixed layer, currents, waves."
+      "position": [140, 60],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "notes": "MOSDAC THREDDS OSF_CIRC and OSF_WAVE (ISRO): SST, salinity, mixed layer depth, currents, waves. Isolated: if MOSDAC is down this branch reports the gap instead of failing the run."
     },
     {
       "parameters": {
@@ -114,11 +185,17 @@
         "jsonBody": "={{ JSON.stringify({ message: $json.message, session_id: $json.session_id, intent: $json.intent, lat: $json.lat, lon: $json.lon, place: $json.place }) }}",
         "options": { "timeout": 240000 }
       },
-      "id": "r-weather",
-      "name": "RAG: marine weather",
+      "id": "a-weather",
+      "name": "Agent: Weather Intelligence",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [60, 190]
+      "position": [140, 230],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "notes": "Wind, gusts, rain, CAPE, visibility and tide. Also derives the convective (lightning proxy) indicator."
     },
     {
       "parameters": {
@@ -126,15 +203,20 @@
         "url": "={{ $env.ORCA_API_BASE || 'http://host.docker.internal:8017' }}/internal/retrieve/geospatial",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ message: $json.message, session_id: $json.session_id, intent: $json.intent, lat: $json.lat, lon: $json.lon, place: $json.place }) }}",
+        "jsonBody": "={{ JSON.stringify({ message: $json.message, session_id: $json.session_id, intent: $json.intent, lat: $json.lat, lon: $json.lon, place: $json.place, destination: $json.destination }) }}",
         "options": { "timeout": 240000 }
       },
-      "id": "r-geo",
-      "name": "RAG: geospatial / geofence",
+      "id": "a-geo",
+      "name": "Agent: Geospatial Reasoning",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [60, 340],
-      "notes": "EEZ, IMBL, marine protected areas, nearest harbour. Spatial retrieval, ranked by distance."
+      "position": [140, 400],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "notes": "India EEZ, IMBL, marine protected areas and the nearest harbour. Point in polygon, distance and bearing, ranked by distance."
     },
     {
       "parameters": {
@@ -145,11 +227,17 @@
         "jsonBody": "={{ JSON.stringify({ message: $json.message, session_id: $json.session_id, intent: $json.intent, lat: $json.lat, lon: $json.lon, place: $json.place }) }}",
         "options": { "timeout": 240000 }
       },
-      "id": "r-hazard",
-      "name": "RAG: hazards and alerts",
+      "id": "a-hazard",
+      "name": "Agent: Hazard and Cyclone Watch",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [60, 490]
+      "position": [140, 570],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "notes": "GDACS cyclone geometry plus IMD warning text. IMD wording is authoritative and overrides any model number."
     },
     {
       "parameters": {
@@ -160,12 +248,17 @@
         "jsonBody": "={{ JSON.stringify({ message: $json.message, session_id: $json.session_id, intent: $json.intent, lat: $json.lat, lon: $json.lon, place: $json.place }) }}",
         "options": { "timeout": 240000 }
       },
-      "id": "r-advisory",
-      "name": "RAG: advisory documents (vector)",
+      "id": "a-advisory",
+      "name": "Agent: Advisory Documents",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [60, 640],
-      "notes": "Document RAG over live IMD warnings, INCOIS PFZ page and the seeded advisory corpus."
+      "position": [140, 740],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "notes": "BM25 document RAG over live IMD warnings, the INCOIS PFZ page and the seeded advisory corpus."
     },
     {
       "parameters": {
@@ -176,32 +269,46 @@
         "jsonBody": "={{ JSON.stringify({ message: $json.message, session_id: $json.session_id, intent: $json.intent, lat: $json.lat, lon: $json.lon, place: $json.place }) }}",
         "options": { "timeout": 240000 }
       },
-      "id": "r-catalog",
-      "name": "RAG: dataset catalogue",
+      "id": "a-catalog",
+      "name": "Agent: Data Discovery",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [60, 790]
+      "position": [140, 910],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "notes": "Live catalogue queries across MOSDAC THREDDS, INCOIS ERDDAP and NASA CMR."
     },
     {
-      "parameters": {
-        "numberInputs": 6,
-        "options": {}
-      },
+      "parameters": { "numberInputs": 6, "options": {} },
       "id": "merge",
-      "name": "4. Merge retrieved knowledge",
+      "name": "Blackboard: collect agent reports",
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3,
-      "position": [400, 400]
+      "position": [520, 560],
+      "notes": "Waits for all six branches. Agents that were not assigned contribute nothing; agents that failed contribute an error item the reconciler records."
     },
     {
       "parameters": {
-        "jsCode": "// Collapse every retrieval branch into one payload for synthesis.\n// Each branch returned { domain, agent, findings, evidence, trace }.\nconst ctx = $('Carry context').first().json;\n\nconst findings = [];\nconst evidence = [];\nconst trace = [...(ctx.classify_trace || [])];\nconst domainsUsed = [];\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  if (j.domain) domainsUsed.push(j.domain);\n  if (j.findings && Object.keys(j.findings).length) findings.push(j.findings);\n  if (Array.isArray(j.evidence)) evidence.push(...j.evidence);\n  if (Array.isArray(j.trace)) trace.push(...j.trace);\n}\n\n// de-duplicate evidence by id; branches share the planner pass so overlap happens\nconst seen = new Set();\nconst uniqueEvidence = [];\nfor (const e of evidence) {\n  if (!e || !e.id || seen.has(e.id)) continue;\n  seen.add(e.id);\n  uniqueEvidence.push(e);\n}\n\n// renumber the trace so the reasoning panel reads in order\ntrace.forEach((step, i) => { if (step) step.seq = i + 1; });\n\nreturn [{\n  json: {\n    message: ctx.message,\n    session_id: ctx.session_id,\n    lat: ctx.lat,\n    lon: ctx.lon,\n    place: ctx.place,\n    destination: ctx.destination || null,\n    intent: ctx.intent,\n    domains_used: domainsUsed,\n    findings,\n    evidence: uniqueEvidence,\n    trace,\n  }\n}];"
+        "jsCode": "// Reconciler. Folds every agent report back onto the blackboard and records\n// which agents failed, so the answer can say what is missing instead of\n// quietly producing a thinner answer.\nconst ctx = $('Blackboard: shared context').first().json;\n\nconst findings = [];\nconst evidence = [];\nconst trace = [...(ctx.classify_trace || [])];\nconst agentsReported = [];\nconst agentsFailed = [];\n\nfor (const item of $input.all()) {\n  const j = item.json || {};\n\n  // a branch isolated by onError:continueRegularOutput carries `error`\n  if (j.error || j.__isolated) {\n    agentsFailed.push(j.domain || j.agent || 'unknown agent');\n    continue;\n  }\n  if (!j.domain && !j.agent) continue;\n\n  agentsReported.push(j.agent || j.domain);\n  if (j.findings && Object.keys(j.findings).length) findings.push(j.findings);\n  if (Array.isArray(j.evidence)) evidence.push(...j.evidence);\n  if (Array.isArray(j.trace)) trace.push(...j.trace);\n}\n\n// de-duplicate evidence by id; every branch runs the same planner pass, so\n// position and window evidence overlaps between agents\nconst seen = new Set();\nconst uniqueEvidence = [];\nfor (const e of evidence) {\n  if (!e || !e.id || seen.has(e.id)) continue;\n  seen.add(e.id);\n  uniqueEvidence.push(e);\n}\n\nif (agentsFailed.length) {\n  trace.push({\n    seq: 0,\n    agent: 'orchestrator',\n    action: `${agentsFailed.length} agent(s) were isolated after failing`,\n    rationale: 'one dead upstream must not sink the request; the answer says what is missing',\n    outcome: agentsFailed.join(', '),\n    status: 'degraded',\n    duration_ms: 0,\n    evidence_ids: [],\n  });\n}\n\ntrace.push({\n  seq: 0,\n  agent: 'orchestrator',\n  action: `reconciled ${agentsReported.length} agent report(s) on the blackboard`,\n  rationale: 'n8n ran the specialist agents in parallel; their findings are merged before the risk rules see them, so risk assessment reads exactly the same evidence as the in-process path',\n  outcome: `${findings.length} finding blocks, ${uniqueEvidence.length} unique evidence items`,\n  status: 'ok',\n  duration_ms: 0,\n  evidence_ids: [],\n});\n\n// renumber so the reasoning panel reads in order\ntrace.forEach((step, i) => { if (step) step.seq = i + 1; });\n\nreturn [{\n  json: {\n    message: ctx.message,\n    session_id: ctx.session_id,\n    lat: ctx.lat,\n    lon: ctx.lon,\n    place: ctx.place,\n    destination: ctx.destination || null,\n    intent: ctx.intent,\n    agents_reported: agentsReported,\n    agents_failed: agentsFailed,\n    findings,\n    evidence: uniqueEvidence,\n    trace,\n    allow_llm: true,\n  }\n}];"
       },
-      "id": "collate",
-      "name": "Collate findings and evidence",
+      "id": "reconcile",
+      "name": "Reconciler: fold reports, flag gaps",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [620, 400]
+      "position": [740, 560]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Small talk and self-description need no retrieval at all. Hand the\n// supervisor's plan straight to synthesis with an empty evidence set.\nconst ctx = $json;\nreturn [{\n  json: {\n    message: ctx.message,\n    session_id: ctx.session_id,\n    lat: ctx.lat,\n    lon: ctx.lon,\n    place: ctx.place,\n    destination: ctx.destination || null,\n    intent: ctx.intent,\n    agents_reported: [],\n    agents_failed: [],\n    findings: [],\n    evidence: [],\n    trace: ctx.classify_trace || [],\n    allow_llm: true,\n  }\n}];"
+      },
+      "id": "no-retrieval",
+      "name": "Shortcut: no retrieval needed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 880]
     },
     {
       "parameters": {
@@ -213,11 +320,73 @@
         "options": { "timeout": 240000 }
       },
       "id": "synthesize",
-      "name": "5. Assess risk and synthesise with the LLM",
+      "name": "Agent: Risk rules then Synthesis",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [840, 400],
-      "notes": "Applies the safety threshold rules over the merged evidence, then drafts the answer and lets the LLM rephrase it without touching the numbers or the verdict."
+      "position": [960, 560],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500,
+      "notes": "Threshold rules plus the Jev System-One judgment produce the verdict in code, worst band wins. Then the template draft, then Gemini rewords or translates it without touching a number or the verdict."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Critic agent. The one thing that must never go wrong is a rewrite that\n// softens an unsafe verdict, so a second pass checks the answer against the\n// verdict the rules produced. This is the n8n mirror of the in-process\n// verdict guard, and it also catches an empty or evidence-free answer.\nconst r = $json || {};\nconst band = (r.risk && r.risk.band) || 'unknown';\nconst answer = (r.answer || '').trim();\nconst language = r.language || 'en';\nconst notes = [];\n\nif (answer.length < 20) {\n  notes.push('the answer is empty or too short to be useful');\n}\n\nif (band === 'unsafe' && r.llm_used) {\n  const negative = ['do not', \"don't\", 'avoid', 'stay in', 'not safe', 'unsafe',\n                    'remain in harbour', 'remain in harbor', 'postpone'];\n  const lowered = answer.toLowerCase();\n  const kept = negative.some((m) => lowered.includes(m));\n  // The backend guard only enforces these markers for English. For a\n  // translated answer the critic cannot read the wording, so it insists on a\n  // deterministic re-run rather than trusting it.\n  if (language === 'en' && !kept) {\n    notes.push('an unsafe verdict lost its negative wording in the rewrite');\n  } else if (language !== 'en') {\n    notes.push(`an unsafe verdict was rewritten into ${language}, which cannot be verified here`);\n  }\n}\n\nconst ranAgents = ($('Reconciler: fold reports, flag gaps').isExecuted\n  ? ($('Reconciler: fold reports, flag gaps').first().json.agents_reported || [])\n  : []);\nif (ranAgents.length && (r.evidence || []).length === 0) {\n  notes.push('agents reported but no evidence reached the answer');\n}\n\nreturn [{ json: { ...r, critic_approved: notes.length === 0, critic_notes: notes } }];"
+      },
+      "id": "critic",
+      "name": "Critic: verify the verdict survived",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1180, 560],
+      "notes": "The safety review step. A model is allowed to reword the answer, never to change what it means."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "version": 2 },
+          "conditions": [
+            {
+              "id": "g3",
+              "leftValue": "={{ $json.critic_approved }}",
+              "rightValue": "true",
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "gate-critic",
+      "name": "Gate: critic approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1400, 560]
+    },
+    {
+      "parameters": {
+        "jsCode": "// One bounded repair attempt: re-run synthesis with the model switched off, so\n// the answer falls back to the deterministic template built from the same\n// evidence. Bounded on purpose. No loop, no second guess, no model.\nconst rejected = $json;\nconst src = $('Reconciler: fold reports, flag gaps').isExecuted\n  ? $('Reconciler: fold reports, flag gaps').first().json\n  : $('Shortcut: no retrieval needed').first().json;\n\nconst trace = [...(src.trace || [])];\ntrace.push({\n  seq: trace.length + 1,\n  agent: 'critic',\n  action: 'rejected the synthesised answer and demanded a deterministic re-run',\n  rationale: 'the safety verdict must survive the wording pass unchanged',\n  outcome: (rejected.critic_notes || []).join('; '),\n  status: 'degraded',\n  duration_ms: 0,\n  evidence_ids: [],\n});\n\nreturn [{ json: { ...src, trace, allow_llm: false } }];"
+      },
+      "id": "repair",
+      "name": "Repair: re-synthesise without the model",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 800]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ORCA_API_BASE || 'http://host.docker.internal:8017' }}/internal/synthesize",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": { "timeout": 240000 }
+      },
+      "id": "resynthesize",
+      "name": "Agent: Synthesis (deterministic only)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1620, 800],
+      "notes": "allow_llm=false, so the API returns the template draft verbatim. The numbers, the citations and the verdict are identical; only the prose is blunter."
     },
     {
       "parameters": {
@@ -229,45 +398,67 @@
       "name": "Answer out",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [1060, 400]
+      "position": [1840, 560]
     },
     {
       "parameters": {
-        "content": "## ORCA request router\n\n**Flow:** chat in -> segregate intent -> fan out -> route to the matching knowledge source -> retrieve -> merge -> risk rules + LLM -> answer out.\n\nThe Switch node is the segregation point. Each branch is a different retriever:\n\n| branch | reads |\n|---|---|\n| ocean | MOSDAC THREDDS OSF_CIRC / OSF_WAVE (ISRO) |\n| weather | wind, gust, rain, CAPE, tide |\n| geospatial | EEZ, IMBL, protected areas, harbours |\n| hazard | GDACS cyclone geometry + IMD warning text |\n| advisory | document RAG over IMD / INCOIS bulletins |\n| catalog | MOSDAC + INCOIS ERDDAP + NASA CMR catalogues |\n\n**Setup**\n1. Set the `ORCA_API_BASE` environment variable in the n8n container. On Docker Desktop use `http://host.docker.internal:8017`. If the API runs in the same compose project use `http://api:8000`.\n2. Activate the workflow, then point the backend at it with `ORCA_N8N_BASE=http://localhost:5678`.\n3. In the UI, tick \"route via n8n\".\n\nThe backend falls back to its in-process orchestrator if this workflow is not reachable, so the demo never hard-fails.",
-        "height": 620,
-        "width": 480
+        "content": "## ORCA multi-agent orchestrator\n\nA supervisor plans, six specialists retrieve in parallel on a shared blackboard, a reconciler folds their reports together, rules decide the verdict, and a critic verifies the answer before it ships.\n\n### The agents\n\n| agent | owns | reads |\n|---|---|---|\n| Supervisor | intent, place, time, delegation | lexical rules, then GLM 5.2 if unsure |\n| Ocean Analytics | sea state | MOSDAC OSF_CIRC / OSF_WAVE (ISRO) |\n| Weather Intelligence | atmosphere | wind, gust, rain, CAPE, tide |\n| Geospatial Reasoning | where you may go | EEZ, IMBL, MPAs, harbours |\n| Hazard and Cyclone Watch | active threats | GDACS geometry + IMD warning text |\n| Advisory Documents | official wording | BM25 over IMD / INCOIS bulletins |\n| Data Discovery | provenance | MOSDAC, INCOIS ERDDAP, NASA CMR |\n| Risk + Synthesis | the verdict | threshold rules + Jev System-One |\n| Critic | the safety review | verifies the verdict survived |\n\n### Why it is orchestration and not a pipeline\n\n1. **Two supervisor gates.** Unanswerable questions are sent back for clarification, and small talk skips retrieval entirely. Neither wakes an agent.\n2. **Agents are isolated.** Every specialist has `onError: continueRegularOutput` and two tries. One dead government server degrades the answer instead of failing the run, and the reconciler names what was lost.\n3. **A shared blackboard.** The plan is resolved once. No specialist re-derives the place or the window, so they cannot disagree.\n4. **A critic with authority.** If a rewrite loses an unsafe verdict, or an answer arrives with no evidence, the critic rejects it and forces one deterministic re-run with `allow_llm: false`. Bounded, single attempt.\n\nThe verdict is always computed by code. The models choose wording and arbitrate ambiguous intent; they never set a number.\n\n### Setup\n\n1. Set `ORCA_API_BASE` in the n8n container. Docker Desktop: `http://host.docker.internal:8017`. Same compose project: `http://api:8000`.\n2. Activate the workflow, then point the backend at it with `ORCA_N8N_BASE=http://localhost:5678`.\n3. In the UI, tick \"route via n8n\".\n\nIf this workflow is unreachable the backend answers with its in-process orchestrator, which runs the identical agent graph, and says so in `degraded_sources`. The demo never hard-fails on n8n.",
+        "height": 1000,
+        "width": 520
       },
       "id": "note",
       "name": "How this works",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [-1120, -300]
+      "position": [-1500, -680]
     }
   ],
   "connections": {
-    "Chat in": { "main": [[{ "node": "1. Segregate intent", "type": "main", "index": 0 }]] },
-    "1. Segregate intent": { "main": [[{ "node": "Carry context", "type": "main", "index": 0 }]] },
-    "Carry context": { "main": [[{ "node": "2. Fan out one item per knowledge source", "type": "main", "index": 0 }]] },
-    "2. Fan out one item per knowledge source": { "main": [[{ "node": "3. Route to the matching knowledge source", "type": "main", "index": 0 }]] },
-    "3. Route to the matching knowledge source": {
+    "Chat in": { "main": [[{ "node": "Supervisor: segregate and plan", "type": "main", "index": 0 }]] },
+    "Supervisor: segregate and plan": { "main": [[{ "node": "Blackboard: shared context", "type": "main", "index": 0 }]] },
+    "Blackboard: shared context": { "main": [[{ "node": "Gate: is the question answerable?", "type": "main", "index": 0 }]] },
+    "Gate: is the question answerable?": {
       "main": [
-        [{ "node": "RAG: ocean state (ISRO OSF)", "type": "main", "index": 0 }],
-        [{ "node": "RAG: marine weather", "type": "main", "index": 0 }],
-        [{ "node": "RAG: geospatial / geofence", "type": "main", "index": 0 }],
-        [{ "node": "RAG: hazards and alerts", "type": "main", "index": 0 }],
-        [{ "node": "RAG: advisory documents (vector)", "type": "main", "index": 0 }],
-        [{ "node": "RAG: dataset catalogue", "type": "main", "index": 0 }]
+        [{ "node": "Ask the skipper to narrow it down", "type": "main", "index": 0 }],
+        [{ "node": "Gate: does this need specialist agents?", "type": "main", "index": 0 }]
       ]
     },
-    "RAG: ocean state (ISRO OSF)": { "main": [[{ "node": "4. Merge retrieved knowledge", "type": "main", "index": 0 }]] },
-    "RAG: marine weather": { "main": [[{ "node": "4. Merge retrieved knowledge", "type": "main", "index": 1 }]] },
-    "RAG: geospatial / geofence": { "main": [[{ "node": "4. Merge retrieved knowledge", "type": "main", "index": 2 }]] },
-    "RAG: hazards and alerts": { "main": [[{ "node": "4. Merge retrieved knowledge", "type": "main", "index": 3 }]] },
-    "RAG: advisory documents (vector)": { "main": [[{ "node": "4. Merge retrieved knowledge", "type": "main", "index": 4 }]] },
-    "RAG: dataset catalogue": { "main": [[{ "node": "4. Merge retrieved knowledge", "type": "main", "index": 5 }]] },
-    "4. Merge retrieved knowledge": { "main": [[{ "node": "Collate findings and evidence", "type": "main", "index": 0 }]] },
-    "Collate findings and evidence": { "main": [[{ "node": "5. Assess risk and synthesise with the LLM", "type": "main", "index": 0 }]] },
-    "5. Assess risk and synthesise with the LLM": { "main": [[{ "node": "Answer out", "type": "main", "index": 0 }]] }
+    "Gate: does this need specialist agents?": {
+      "main": [
+        [{ "node": "Delegate: one task per domain", "type": "main", "index": 0 }],
+        [{ "node": "Shortcut: no retrieval needed", "type": "main", "index": 0 }]
+      ]
+    },
+    "Delegate: one task per domain": { "main": [[{ "node": "Supervisor: assign to the owning agent", "type": "main", "index": 0 }]] },
+    "Supervisor: assign to the owning agent": {
+      "main": [
+        [{ "node": "Agent: Ocean Analytics", "type": "main", "index": 0 }],
+        [{ "node": "Agent: Weather Intelligence", "type": "main", "index": 0 }],
+        [{ "node": "Agent: Geospatial Reasoning", "type": "main", "index": 0 }],
+        [{ "node": "Agent: Hazard and Cyclone Watch", "type": "main", "index": 0 }],
+        [{ "node": "Agent: Advisory Documents", "type": "main", "index": 0 }],
+        [{ "node": "Agent: Data Discovery", "type": "main", "index": 0 }]
+      ]
+    },
+    "Agent: Ocean Analytics": { "main": [[{ "node": "Blackboard: collect agent reports", "type": "main", "index": 0 }]] },
+    "Agent: Weather Intelligence": { "main": [[{ "node": "Blackboard: collect agent reports", "type": "main", "index": 1 }]] },
+    "Agent: Geospatial Reasoning": { "main": [[{ "node": "Blackboard: collect agent reports", "type": "main", "index": 2 }]] },
+    "Agent: Hazard and Cyclone Watch": { "main": [[{ "node": "Blackboard: collect agent reports", "type": "main", "index": 3 }]] },
+    "Agent: Advisory Documents": { "main": [[{ "node": "Blackboard: collect agent reports", "type": "main", "index": 4 }]] },
+    "Agent: Data Discovery": { "main": [[{ "node": "Blackboard: collect agent reports", "type": "main", "index": 5 }]] },
+    "Blackboard: collect agent reports": { "main": [[{ "node": "Reconciler: fold reports, flag gaps", "type": "main", "index": 0 }]] },
+    "Reconciler: fold reports, flag gaps": { "main": [[{ "node": "Agent: Risk rules then Synthesis", "type": "main", "index": 0 }]] },
+    "Shortcut: no retrieval needed": { "main": [[{ "node": "Agent: Risk rules then Synthesis", "type": "main", "index": 0 }]] },
+    "Agent: Risk rules then Synthesis": { "main": [[{ "node": "Critic: verify the verdict survived", "type": "main", "index": 0 }]] },
+    "Critic: verify the verdict survived": { "main": [[{ "node": "Gate: critic approved?", "type": "main", "index": 0 }]] },
+    "Gate: critic approved?": {
+      "main": [
+        [{ "node": "Answer out", "type": "main", "index": 0 }],
+        [{ "node": "Repair: re-synthesise without the model", "type": "main", "index": 0 }]
+      ]
+    },
+    "Repair: re-synthesise without the model": { "main": [[{ "node": "Agent: Synthesis (deterministic only)", "type": "main", "index": 0 }]] },
+    "Agent: Synthesis (deterministic only)": { "main": [[{ "node": "Answer out", "type": "main", "index": 0 }]] }
   },
   "settings": { "executionOrder": "v1" },
   "pinData": {},

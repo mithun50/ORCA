@@ -22,16 +22,37 @@ from .base import HttpConnector
 NIO_BBOX = (30.0, 100.0, -5.0, 30.0)  # west, east, south, north
 
 
+def _within_window(raw: Any, since: datetime) -> bool:
+    """Keep an event whose end date is recent, or whose date cannot be read.
+
+    Being permissive is the safe direction here: dropping a live cyclone because
+    its date string was in an unexpected format would remove the single most
+    important hazard from the answer.
+    """
+    if not raw:
+        return True
+    text = str(raw).strip().replace("Z", "+00:00")
+    for candidate in (text, text.split("T")[0]):
+        try:
+            parsed = datetime.fromisoformat(candidate)
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed >= since
+    return True
+
+
 class GdacsConnector(HttpConnector):
     source_name = "gdacs"
 
     async def tropical_cyclones(self, days_back: int = 10) -> list[dict[str, Any]]:
-        since = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime(
-            "%Y-%m-%d"
-        )
+        since = datetime.now(timezone.utc) - timedelta(days=days_back)
+        # `fromDate` makes this endpoint answer 204 No Content, so the window is
+        # applied here instead of upstream.
         payload = await self.get_json(
             self.settings.gdacs_base,
-            params={"eventlist": "TC", "fromDate": since},
+            params={"eventlist": "TC"},
             ttl=1800,
         )
         if not payload:
@@ -48,6 +69,8 @@ class GdacsConnector(HttpConnector):
                 continue
             west, east, south, north = NIO_BBOX
             if not (west <= lon <= east and south <= lat <= north):
+                continue
+            if not _within_window(props.get("todate") or props.get("fromdate"), since):
                 continue
             events.append(
                 {

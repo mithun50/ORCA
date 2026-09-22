@@ -70,6 +70,26 @@ class Evidence(BaseModel):
         return f"{self.label} = {self.value} {self.unit}".strip()
 
 
+class Citation(BaseModel):
+    """One numbered marker in the answer text, bound to the evidence behind it.
+
+    The answer carries `[1]`, `[2]` markers inline. This is what each one points
+    at, so a reader can check any claim without hunting through the evidence
+    panel, and so the UI can make the marker clickable.
+    """
+
+    marker: int
+    evidence_id: str
+    label: str
+    value: str = ""
+    agency: str = ""
+    dataset: str = ""
+    tier: Tier = Tier.SEED
+    url: str = ""
+    official: bool = True
+    is_stale: bool = False
+
+
 # --------------------------------------------------------------------------- #
 # reasoning trace
 # --------------------------------------------------------------------------- #
@@ -216,6 +236,38 @@ class ChatRequest(BaseModel):
     audio_base64: str | None = None
 
 
+class ModelRole(BaseModel):
+    """Which model did which job on this request, and whether it actually ran."""
+
+    role: str           # intent | audience | verdict | judgment | wording | voice
+    job: str            # human readable description of the work
+    provider: str = ""  # openrouter | gemini | typesafe | sarvam | rules | none
+    model: str = ""
+    used: bool = False
+    detail: str = ""
+    #: usage, when the provider reports it. `cost_usd` stays None rather than
+    #: being estimated, so the UI can honestly say "not reported".
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float | None = None
+    elapsed_ms: int = 0
+    #: what drives the bill for this provider: tokens, characters, or nothing
+    billing_unit: str = "none"
+
+
+class CostSummary(BaseModel):
+    """What this one prompt cost, as far as the providers actually reported."""
+
+    total_usd: float = 0.0
+    #: roles that ran but whose provider does not report a price
+    unpriced_roles: list[str] = Field(default_factory=list)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    tts_characters: int = 0
+    #: True when every paid role reported a figure, so total_usd is complete
+    complete: bool = True
+
+
 class ChatResponse(BaseModel):
     session_id: str
     answer: str
@@ -225,6 +277,8 @@ class ChatResponse(BaseModel):
     window: TimeWindow | None = None
     risk: RiskAssessment | None = None
     evidence: list[Evidence] = Field(default_factory=list)
+    #: inline [n] markers in `answer`, resolved to the evidence behind each one
+    citations: list[Citation] = Field(default_factory=list)
     trace: list[TraceStep] = Field(default_factory=list)
     layers: list[MapLayer] = Field(default_factory=list)
     charts: list[ChartSeries] = Field(default_factory=list)
@@ -234,6 +288,13 @@ class ChatResponse(BaseModel):
     llm_used: bool = False
     via_n8n: bool = False
     language: str = "en"
+    #: who the answer was written for, and how confident that call was
+    audience: str = "fisherman"
+    audience_confidence: float = 0.0
+    #: full attribution: every model that could have run, and whether it did
+    model_roles: list[ModelRole] = Field(default_factory=list)
+    #: what this prompt cost, per the providers' own reporting
+    cost: CostSummary = Field(default_factory=CostSummary)
     audio_base64: str | None = None
 
 

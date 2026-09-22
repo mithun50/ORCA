@@ -11,3 +11,7 @@ python-dateutil==2.9.0.post0
 tenacity==9.0.0
 orjson==3.10.13
 python-multipart>=0.0.9
+# Verify TLS against the OS trust store. Several .gov.in hosts (notably
+# erddap.incois.gov.in) serve an incomplete certificate chain that certifi
+# cannot complete, and this fixes them without weakening verification.
+truststore==0.10.1

@@ -75,8 +75,46 @@
   .side { display: grid; grid-template-rows: 250px auto; overflow: hidden; }
   #map { width: 100%; height: 250px; background: #0d1a27; }
   .panels { overflow-y: auto; padding: 12px; }
-  .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
-  .tabs button {
+  /* exact-position bar */
+  .locbar {
+    display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+    margin-bottom: 8px; padding: 8px; border-radius: 10px;
+    background: var(--panel); border: 1px solid var(--line);
+  }
+  .locbar input {
+    flex: 1 1 210px; min-width: 150px; padding: 7px 9px; font-size: 12px;
+    color: var(--fg); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 7px;
+  }
+  .locbar button {
+    padding: 7px 9px; font-size: 12px; cursor: pointer; white-space: nowrap;
+    color: var(--fg); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 7px;
+  }
+  .locbar button:hover { border-color: var(--accent); color: var(--accent); }
+  .locbar button.armed { border-color: var(--accent); color: #05231f; background: var(--accent); }
+  .loc-state { flex: 1 1 100%; font-size: 11px; color: var(--muted); }
+  .loc-state.set { color: var(--accent); }
+  /* citation markers inside an answer */
+  .cite {
+    display: inline-block; cursor: pointer; margin-left: 2px;
+    font-size: 10px; font-weight: 700; line-height: 1;
+    padding: 2px 4px; border-radius: 4px; vertical-align: super;
+    color: var(--accent); background: rgba(45, 212, 191, 0.14);
+    border: 1px solid rgba(45, 212, 191, 0.45);
+  }
+  .cite:hover { background: var(--accent); color: #05231f; }
+  .cite-missing { color: var(--muted); border-color: var(--muted); background: none; cursor: default; }
+  .cite-badge { vertical-align: baseline; cursor: default; margin: 0 4px 0 0; }
+  .card.flash {
+    animation: flash 1.5s ease-out;
+  }
+  @keyframes flash {
+    0%   { box-shadow: 0 0 0 2px var(--accent); background: rgba(45,212,191,0.12); }
+    100% { box-shadow: none; background: transparent; }
+  }
+  .card a { color: var(--accent); }
+  .tabs { display: flex; gap: 6px; margin-bottom: 10px; }  .tabs button {
     flex: 1; padding: 7px; font-size: 12.5px; cursor: pointer;
     background: var(--panel2); color: var(--muted); border: 1px solid var(--line); border-radius: 7px;
   }
@@ -124,6 +162,13 @@
 <main>
   <section class="chat">
     <div class="samples" id="samples"></div>
+    <div class="locbar">
+      <input type="text" id="coords" autocomplete="off" placeholder="Exact position: 13.08, 80.35  (or a harbour name)" />
+      <button type="button" id="gpsBtn" title="Use this device's GPS">📍 Use my GPS</button>
+      <button type="button" id="pickBtn" title="Click the map to drop a pin">🗺️ Pick on map</button>
+      <button type="button" id="clearLoc" title="Forget the pinned position">✕</button>
+      <span id="locState" class="loc-state">no position pinned - place names in your question will be used</span>
+    </div>
     <div class="messages" id="messages"></div>
     <form id="form">
       <select id="langSelect" class="select-lang" title="Select Response Language">
@@ -145,10 +190,14 @@
     <div id="map"></div>
     <div class="panels">
       <div class="tabs">
-        <button data-tab="evidence" class="on">Evidence</button>
+        <button data-tab="evidence" class="on">Sources</button>
+        <button data-tab="verdict">Verdict</button>
+        <button data-tab="models">Models &amp; cost</button>
         <button data-tab="trace">Reasoning</button>
       </div>
       <div id="evidence"><div class="empty">Ask something. Every number that comes back is shown here with the agency it came from.</div></div>
+      <div id="verdict" style="display:none"><div class="empty">The safety verdict, every threshold rule that fired, and the Jev System-One judgment will appear here.</div></div>
+      <div id="models" style="display:none"><div class="empty">Which model did which job, and what this answer cost, will appear here.</div></div>
       <div id="trace" style="display:none"><div class="empty">The agents' reasoning steps will appear here.</div></div>
     </div>
   </aside>
@@ -171,20 +220,76 @@ const SAMPLES = [
 ];
 
 const $ = (id) => document.getElementById(id);
-let map, layerGroup;
+let map, layerGroup, baseLayers;
+
+// Basemaps. CARTO's tile CDN is frequently blocked by ad-blockers and some
+// networks, which left the map blank with no error, so OpenStreetMap is now the
+// default: no key, no subdomain sharding, and rarely blocked. If its tiles fail
+// anyway we fall through to the next provider automatically.
+const BASEMAPS = [
+  {
+    id: 'osm',
+    label: 'Streets (OpenStreetMap)',
+    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    options: { maxZoom: 18, attribution: '&copy; OpenStreetMap contributors' },
+  },
+  {
+    id: 'ocean',
+    label: 'Ocean (Esri)',
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
+    options: { maxZoom: 13, attribution: 'Esri, GEBCO, NOAA, National Geographic' },
+  },
+  {
+    id: 'sat',
+    label: 'Satellite (Esri)',
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    options: { maxZoom: 17, attribution: 'Esri, Maxar, Earthstar Geographics' },
+  },
+];
 
 function initMap() {
-  map = L.map('map', { zoomControl: true, attributionControl: false }).setView([13.0, 80.5], 6);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    maxZoom: 12
-  }).addTo(map);
+  map = L.map('map', { zoomControl: true, attributionControl: true })
+    .setView([13.0, 80.5], 6);
+
+  baseLayers = {};
+  BASEMAPS.forEach((b, i) => {
+    const layer = L.tileLayer(b.url, b.options);
+    baseLayers[b.label] = layer;
+    // If a provider is blocked, Leaflet fires tileerror. Move on rather than
+    // leaving the user staring at an empty grey square.
+    let failures = 0;
+    layer.on('tileerror', () => {
+      failures += 1;
+      if (failures === 4 && map.hasLayer(layer) && BASEMAPS[i + 1]) {
+        console.warn(`basemap ${b.id} is not loading, switching to ${BASEMAPS[i + 1].id}`);
+        map.removeLayer(layer);
+        baseLayers[BASEMAPS[i + 1].label].addTo(map);
+      }
+    });
+    if (i === 0) layer.addTo(map);
+  });
+
+  L.control.layers(baseLayers, null, { position: 'topright', collapsed: true }).addTo(map);
   layerGroup = L.layerGroup().addTo(map);
 }
 
 const MARKER_COLOUR = { good: '#34d399', caution: '#fbbf24', danger: '#f87171', harbour: '#38bdf8', info: '#94a3b8', pfz: '#2dd4bf' };
 
+// Overlay control, rebuilt per answer. Kept separate from `layerGroup` so the
+// user can switch the ISRO/INCOIS data fields on and off over the street map
+// instead of them being burned in.
+let overlayControl = null;
+let overlayLayers = {};
+
+function clearOverlays() {
+  Object.values(overlayLayers).forEach(l => { if (map.hasLayer(l)) map.removeLayer(l); });
+  overlayLayers = {};
+  if (overlayControl) { map.removeControl(overlayControl); overlayControl = null; }
+}
+
 function renderMap(data) {
   layerGroup.clearLayers();
+  clearOverlays();
   let focus = null;
   (data.layers || []).forEach(layer => {
     if (layer.kind === 'markers') {
@@ -216,14 +321,26 @@ function renderMap(data) {
           dashArray: f.properties && f.properties.recommended ? null : '5,6'
         })
       }).bindPopup(layer.legend || layer.title));
-    } else if (layer.kind === 'wms' && layer.visible_by_default && layer.url) {
-      layerGroup.addLayer(L.tileLayer.wms(layer.url, {
+    } else if (layer.kind === 'wms' && layer.url) {
+      // Every gridded field the agencies returned becomes a switchable overlay,
+      // labelled with the agency so the source is never ambiguous.
+      const wms = L.tileLayer.wms(layer.url, {
         layers: layer.wms_layer, styles: layer.wms_style || '',
         format: 'image/png', transparent: true, opacity: layer.opacity || 0.6,
-        version: '1.3.0'
-      }));
+        version: '1.3.0',
+        attribution: layer.attribution || '',
+      });
+      const name = `${layer.title}${layer.legend ? ' — ' + layer.legend : ''}`;
+      overlayLayers[name] = wms;
+      if (layer.visible_by_default) wms.addTo(map);
     }
   });
+
+  if (Object.keys(overlayLayers).length) {
+    overlayControl = L.control.layers(null, overlayLayers, {
+      position: 'topright', collapsed: true,
+    }).addTo(map);
+  }
   if (focus) map.setView(focus, 7);
 }
 
@@ -231,27 +348,43 @@ function renderEvidence(data) {
   const host = $('evidence');
   const items = data.evidence || [];
   if (!items.length) { host.innerHTML = '<div class="empty">No evidence returned.</div>'; return; }
-  const numeric = items.filter(e => e.value !== null && e.value !== undefined && e.value !== '');
-  const textual = items.filter(e => !numeric.includes(e));
-  host.innerHTML = [
-    ...numeric.map(card),
-    ...(textual.length ? ['<div class="card"><h4>Documents and advisories cited</h4>' +
+  // markers assigned by the answer, so a source card shows its own [n]
+  const markerFor = {};
+  (data.citations || []).forEach(c => { markerFor[c.evidence_id] = c.marker; });
+  const cited = items.filter(e => markerFor[e.id] !== undefined)
+    .sort((a, b) => markerFor[a.id] - markerFor[b.id]);
+  const uncited = items.filter(e => markerFor[e.id] === undefined);
+  const numeric = uncited.filter(e => e.value !== null && e.value !== undefined && e.value !== '');
+  const textual = uncited.filter(e => !numeric.includes(e));
+
+  const head = cited.length
+    ? `<div class="src" style="margin-bottom:8px">${cited.length} source${cited.length === 1 ? '' : 's'} cited in the answer. Click any [n] above to jump here.</div>`
+    : '';
+  host.innerHTML = head
+    + cited.map(e => card(e, markerFor[e.id])).join('')
+    + (numeric.length || textual.length
+        ? `<div class="src" style="margin:12px 0 8px">Also retrieved, not cited in the wording:</div>` : '')
+    + numeric.map(e => card(e)).join('')
+    + (textual.length ? '<div class="card"><h4>Documents and advisories cited</h4>' +
         textual.map(e =>
           `<div style="margin:6px 0"><span class="tier ${e.provenance.tier}">${tierName(e.provenance.tier)}</span>
            <span style="font-size:12px"> ${escape(e.label)}</span>
            <div class="src">${escape(e.provenance.agency)}</div></div>`
-        ).join('') + '</div>'] : [])
-  ].join('');
+        ).join('') + '</div>' : '');
 }
 
-function card(e) {
+function card(e, marker) {
   const p = e.provenance;
-  const value = typeof e.value === 'number' ? (+e.value).toFixed(2) : escape(String(e.value));
-  return `<div class="card">
-    <h4>${escape(e.label)}</h4>
+  const value = typeof e.value === 'number' ? (+e.value).toFixed(2) : escape(String(e.value ?? ''));
+  const badge = marker !== undefined
+    ? `<span class="cite cite-badge">[${marker}]</span> ` : '';
+  const link = p.url
+    ? ` &middot; <a href="${escape(p.url)}" target="_blank" rel="noopener noreferrer">source</a>` : '';
+  return `<div class="card" data-evidence-id="${escape(e.id)}">
+    <h4>${badge}${escape(e.label)}</h4>
     <div class="val">${value} <span style="font-size:12px;color:var(--muted)">${escape(e.unit || '')}</span></div>
     <div class="src"><span class="tier ${p.tier}">${tierName(p.tier)}</span> ${escape(p.agency)}
-      ${p.access_method ? ' &middot; ' + escape(p.access_method) : ''}</div>
+      ${p.access_method ? ' &middot; ' + escape(p.access_method) : ''}${link}</div>
     ${p.is_stale ? `<div class="stale">stale: ${escape(p.staleness_note)}</div>` : ''}
     ${p.caveat ? `<div class="caveat">${escape(p.caveat)}</div>` : ''}
   </div>`;
@@ -260,6 +393,121 @@ function card(e) {
 function tierName(t) {
   return { 'tier1-isro': 'ISRO', 'tier2-incois': 'INCOIS', 'tier3-imd': 'IMD',
            'tier4-fallback': 'fallback', 'derived': 'derived', 'seed': 'reference' }[t] || t;
+}
+
+// The verdict panel. Threshold rules and the Jev judgment are shown separately
+// on purpose: the rules decide the band, Jev is a second opinion that can only
+// make it more conservative. Showing them merged would hide that.
+function renderVerdict(data) {
+  const host = $('verdict');
+  const risk = data.risk;
+  if (!risk) {
+    host.innerHTML = '<div class="empty">This question did not need a safety verdict.</div>';
+    return;
+  }
+
+  const band = risk.band || 'unknown';
+  const blocks = [];
+
+  blocks.push(`<div class="card">
+    <h4>Verdict</h4>
+    <div class="val"><span class="band ${band}">${band}</span></div>
+    <div class="src">${escape(risk.headline || '')}</div>
+    ${risk.window_advice ? `<div class="caveat">${escape(risk.window_advice)}</div>` : ''}
+    <div class="src" style="margin-top:6px">Score ${Number(risk.score).toFixed(0)}/100. Any single unsafe rule saturates this, so read the rules below rather than the number.</div>
+  </div>`);
+
+  const rules = (risk.findings || []).filter(f => !String(f.rule).startsWith('jev_'));
+  if (rules.length) {
+    blocks.push(`<div class="card"><h4>Threshold rules that fired (${rules.length})</h4>` +
+      rules.map(f => `<div style="margin:7px 0">
+          <span class="band ${f.band}">${f.band}</span>
+          <span style="font-size:12px"> ${escape(f.rule)}</span>
+          <div class="src">${escape(f.detail || '')}</div>
+          ${(f.evidence_ids || []).length ? `<div class="src" style="opacity:.7">evidence: ${escape((f.evidence_ids || []).join(', '))}</div>` : ''}
+        </div>`).join('') + '</div>');
+  }
+
+  const j = risk.jev_decision;
+  if (j) {
+    const pct = (v) => `${(Number(v) * 100).toFixed(0)}%`;
+    const dist = j.verdict_probabilities && Object.keys(j.verdict_probabilities).length
+      ? Object.entries(j.verdict_probabilities)
+          .map(([k, v]) => `${escape(k)} ${pct(v)}`).join(' &middot; ')
+      : '';
+    blocks.push(`<div class="card" style="border-color:#38bdf8">
+      <h4>Jev System-One judgment</h4>
+      <div class="val">${escape(j.verdict)} <span style="font-size:12px;color:var(--muted)">${escape(j.action)}</span></div>
+      <div class="src">
+        <b>severity</b> (score) ${Number(j.risk_score).toFixed(0)}/100 &middot;
+        <b>confidence</b> ${pct(j.confidence)}
+      </div>
+      <div class="src">
+        <b>breach</b> (noul) ${pct(j.breach_probability)} &middot;
+        <b>capsizing</b> (noul) ${pct(j.capsizing_probability)}
+      </div>
+      ${dist ? `<div class="src">distribution: ${dist}</div>` : ''}
+      <div class="src" style="opacity:.75;margin-top:6px">
+        ${escape(j.engine)}${j.model ? ' &middot; ' + escape(j.model) : ''}
+      </div>
+      <div class="caveat">A second opinion over the same numbers. Worst band wins, so this can only make the verdict more conservative, never less.</div>
+    </div>`);
+  }
+
+  host.innerHTML = blocks.join('');
+}
+
+// Models and cost. Two things a reader deserves to know: which model did which
+// job, and what the answer cost. Costs are only shown where the provider
+// actually reported a figure, never estimated.
+function renderModels(data) {
+  const host = $('models');
+  const roles = data.model_roles || [];
+  if (!roles.length) {
+    host.innerHTML = '<div class="empty">No model attribution for this answer.</div>';
+    return;
+  }
+  const money = (v) => '$' + Number(v).toFixed(6);
+  const c = data.cost || {};
+
+  const totalCard = `<div class="card" style="border-color:var(--accent)">
+    <h4>What this answer cost</h4>
+    <div class="val">${money(c.total_usd || 0)}</div>
+    <div class="src">
+      ${(c.input_tokens || 0).toLocaleString()} tokens in &middot;
+      ${(c.output_tokens || 0).toLocaleString()} out
+      ${c.tts_characters ? '&middot; ' + c.tts_characters.toLocaleString() + ' characters spoken' : ''}
+    </div>
+    ${!c.complete && (c.unpriced_roles || []).length
+      ? `<div class="caveat">Not the whole bill: ${escape((c.unpriced_roles || []).join(', '))}
+         ${(c.unpriced_roles || []).length === 1 ? 'does' : 'do'} not report a price, so
+         ${(c.unpriced_roles || []).length === 1 ? 'it is' : 'they are'} missing from this total.</div>`
+      : '<div class="src" style="color:var(--ok)">Every paid step reported a figure, so this total is complete.</div>'}
+  </div>`;
+
+  const roleCards = roles.map(r => {
+    const cost = r.cost_usd === null || r.cost_usd === undefined
+      ? (r.billing_unit === 'none' ? 'free' : 'not reported')
+      : money(r.cost_usd);
+    const state = r.used
+      ? '<span class="band safe">ran</span>'
+      : '<span class="chip">did not run</span>';
+    return `<div class="card">
+      <h4>${escape(r.role)} ${state}</h4>
+      <div class="src" style="margin-bottom:4px">${escape(r.job)}</div>
+      <div class="val" style="font-size:15px">${escape(r.model || 'n/a')}</div>
+      <div class="src">
+        ${escape(r.provider || 'n/a')}
+        ${r.input_tokens || r.output_tokens
+          ? ` &middot; ${r.input_tokens}/${r.output_tokens} tokens` : ''}
+        &middot; <b>${cost}</b>
+        ${r.elapsed_ms ? ' &middot; ' + r.elapsed_ms + 'ms' : ''}
+      </div>
+      ${r.detail ? `<div class="caveat">${escape(r.detail)}</div>` : ''}
+    </div>`;
+  }).join('');
+
+  host.innerHTML = totalCard + roleCards;
 }
 
 function renderTrace(data) {
@@ -280,11 +528,56 @@ function escape(s) {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
+// Clicking a citation opens the Sources tab and highlights the exact card.
+function showSource(cite) {
+  const btn = document.querySelector('.tabs button[data-tab="evidence"]');
+  if (btn) btn.click();
+  const card = document.querySelector(`[data-evidence-id="${cite.evidence_id}"]`);
+  if (card) {
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    card.classList.add('flash');
+    setTimeout(() => card.classList.remove('flash'), 1600);
+  }
+}
+
 function addMessage(text, cls, extras) {
   const div = document.createElement('div');
   div.className = 'msg ' + cls;
   if (extras && extras.meta) div.innerHTML = extras.meta;
-  div.appendChild(document.createTextNode(text));
+
+  // Turn [1] and [3,4] into clickable chips that jump to the source. Built by
+  // DOM node, never by string interpolation, so answer text can never inject.
+  const citations = (extras && extras.citations) || [];
+  if (citations.length) {
+    const byMarker = {};
+    citations.forEach(c => { byMarker[c.marker] = c; });
+    const body = document.createElement('div');
+    const re = /\[(\d+(?:\s*,\s*\d+)*)\]/g;
+    let last = 0, m;
+    while ((m = re.exec(text)) !== null) {
+      body.appendChild(document.createTextNode(text.slice(last, m.index)));
+      m[1].split(',').map(s => s.trim()).forEach((num, i, arr) => {
+        const cite = byMarker[Number(num)];
+        const sup = document.createElement('sup');
+        sup.className = 'cite' + (cite ? '' : ' cite-missing');
+        sup.textContent = '[' + num + ']';
+        if (cite) {
+          sup.title = `${cite.label}${cite.value ? ' = ' + cite.value : ''}\n`
+            + `${cite.agency}${cite.dataset ? ' / ' + cite.dataset : ''}`
+            + (cite.is_stale ? '\n(this forecast cycle is stale)' : '');
+          sup.onclick = () => showSource(cite);
+        }
+        body.appendChild(sup);
+        if (i < arr.length - 1) body.appendChild(document.createTextNode(''));
+      });
+      last = m.index + m[0].length;
+    }
+    body.appendChild(document.createTextNode(text.slice(last)));
+    div.appendChild(body);
+  } else {
+    div.appendChild(document.createTextNode(text));
+  }
+
   if (extras && extras.audio_base64) {
     const audioBtn = document.createElement('button');
     audioBtn.className = 'play-audio-btn';
@@ -311,23 +604,133 @@ function addMessage(text, cls, extras) {
   return div;
 }
 
+// --- exact position -------------------------------------------------------
+// A pinned position always wins over a place name in the question. That matters
+// for a boat already at sea, where the nearest named harbour is not where it is.
+let pinned = null;   // { lat, lon, label }
+let picking = false;
+
+function setPinned(lat, lon, label) {
+  pinned = { lat: +lat, lon: +lon, label: label || '' };
+  $('coords').value = `${pinned.lat.toFixed(4)}, ${pinned.lon.toFixed(4)}`;
+  const st = $('locState');
+  st.className = 'loc-state set';
+  st.textContent = `answers will use ${pinned.lat.toFixed(4)}N ${pinned.lon.toFixed(4)}E`
+    + (label ? ` (${label})` : '') + ' - place names in your question are ignored';
+  if (map) {
+    if (window._pin) map.removeLayer(window._pin);
+    window._pin = L.marker([pinned.lat, pinned.lon], { title: 'your pinned position' })
+      .addTo(map).bindPopup('Your pinned position');
+    map.setView([pinned.lat, pinned.lon], 8);
+  }
+}
+
+function clearPinned() {
+  pinned = null;
+  $('coords').value = '';
+  const st = $('locState');
+  st.className = 'loc-state';
+  st.textContent = 'no position pinned - place names in your question will be used';
+  if (window._pin && map) { map.removeLayer(window._pin); window._pin = null; }
+}
+
+// Accepts "13.08, 80.35", "13.08N 80.35E", or a plain harbour name (sent as
+// `place` so the backend gazetteer resolves it).
+function readCoordBox() {
+  const raw = $('coords').value.trim();
+  if (!raw) return null;
+  const m = raw.match(/^\s*(-?\d{1,2}(?:\.\d+)?)\s*[nNsS]?\s*[, ]\s*(-?\d{1,3}(?:\.\d+)?)\s*[eEwW]?\s*$/);
+  if (m) return { lat: +m[1], lon: +m[2] };
+  return { place: raw };
+}
+
+function initLocationBar() {
+  $('gpsBtn').onclick = () => {
+    if (!navigator.geolocation) { alert('This browser has no GPS support.'); return; }
+    $('locState').textContent = 'asking the browser for your position...';
+    navigator.geolocation.getCurrentPosition(
+      (p) => setPinned(p.coords.latitude, p.coords.longitude, 'device GPS'),
+      (err) => {
+        $('locState').className = 'loc-state';
+        $('locState').textContent = 'GPS unavailable: ' + err.message
+          + ' - type a position or a harbour name instead';
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  };
+
+  $('pickBtn').onclick = () => {
+    picking = !picking;
+    $('pickBtn').classList.toggle('armed', picking);
+    $('locState').textContent = picking
+      ? 'click anywhere on the map to pin that position'
+      : 'map picking cancelled';
+    if (map) map.getContainer().style.cursor = picking ? 'crosshair' : '';
+  };
+
+  $('clearLoc').onclick = clearPinned;
+
+  $('coords').onchange = () => {
+    const parsed = readCoordBox();
+    if (parsed && parsed.lat !== undefined) setPinned(parsed.lat, parsed.lon, 'typed');
+  };
+
+  if (map) {
+    map.on('click', (e) => {
+      if (!picking) return;
+      picking = false;
+      $('pickBtn').classList.remove('armed');
+      map.getContainer().style.cursor = '';
+      setPinned(e.latlng.lat, e.latlng.lng, 'picked on map');
+    });
+  }
+}
+
+// What gets merged into every /chat request body. The pin label is deliberately
+// not sent as `place`: it describes how the position was obtained, not where it
+// is, and sending it produced answers like "off picked on map".
+function locationPayload() {
+  if (pinned) return { lat: pinned.lat, lon: pinned.lon };
+  const parsed = readCoordBox();
+  if (parsed && parsed.lat !== undefined) return { lat: parsed.lat, lon: parsed.lon };
+  if (parsed && parsed.place) return { place: parsed.place };
+  return {};
+}
+
 function metaHtml(data) {
   const band = (data.risk && data.risk.band) || 'unknown';
+  const AUDIENCE_LABEL = {
+    fisherman: 'written for a fisherman',
+    researcher: 'written for a researcher',
+    official: 'written for an authority',
+    general: 'written for a general reader',
+  };
   const chips = [
     `<span class="chip route">${escape(data.intent)}</span>`,
-    `<span class="chip">confidence ${(data.confidence * 100).toFixed(0)}%</span>`,
   ];
   if (data.risk) chips.push(`<span class="band ${band}">${band}</span>`);
+  if (data.audience) {
+    chips.push(`<span class="chip" style="border-color:#f59e0b;color:#f59e0b"
+      title="detected at ${((data.audience_confidence || 0) * 100).toFixed(0)}% confidence">${escape(AUDIENCE_LABEL[data.audience] || data.audience)}</span>`);
+  }
+  if ((data.citations || []).length) {
+    chips.push(`<span class="chip" style="border-color:var(--accent);color:var(--accent)">${data.citations.length} sources cited</span>`);
+  }
   if (data.risk && data.risk.jev_decision) {
     const j = data.risk.jev_decision;
-    chips.push(`<span class="chip" style="border-color:#38bdf8;color:#38bdf8">Jev: ${escape(j.action)} (${j.risk_score}/100)</span>`);
+    const live = j.engine && j.engine !== 'jev-rule-emulator';
+    chips.push(`<span class="chip" style="border-color:#38bdf8;color:#38bdf8" title="${escape(j.engine)}${j.model ? ' / ' + escape(j.model) : ''}">Jev: ${escape(j.action)}${live ? '' : ' offline'}</span>`);
   }
   if (data.language) chips.push(`<span class="chip" style="border-color:#a78bfa;color:#a78bfa">${escape(data.language.toUpperCase())}</span>`);
-  if (data.audio_base64) chips.push('<span class="chip" style="border-color:#2dd4bf;color:#2dd4bf">Sarvam Voice</span>');
+  if (data.cost && data.cost.total_usd > 0) {
+    chips.push(`<span class="chip" title="${data.cost.complete ? 'every paid step reported a price' : 'some steps do not report a price'}">$${Number(data.cost.total_usd).toFixed(6)}${data.cost.complete ? '' : '+'}</span>`);
+  }
+  if (data.audio_base64) chips.push('<span class="chip" style="border-color:#2dd4bf;color:#2dd4bf">voice</span>');
   if (data.location) chips.push(`<span class="chip">${escape(data.location.name)}</span>`);
   if (data.window) chips.push(`<span class="chip">${escape(data.window.label)}</span>`);
-  chips.push(`<span class="chip">${(data.evidence || []).length} evidence</span>`);
-  if (data.llm_used) chips.push('<span class="chip">LLM phrasing</span>');
+  chips.push(data.llm_used
+    ? '<span class="chip" title="A model reworded the draft. The numbers and the verdict came from the rules.">model wording</span>'
+    : '<span class="chip" title="No model touched this answer. Straight from the deterministic templates.">template wording</span>');
   if (data.via_n8n) chips.push('<span class="chip route">via n8n</span>');
   return `<div class="meta">${chips.join('')}</div>`;
 }
@@ -345,13 +748,16 @@ async function ask(question) {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: question, session_id: SESSION, language: selectedLang })
+      body: JSON.stringify(Object.assign(
+        { message: question, session_id: SESSION, language: selectedLang },
+        locationPayload()
+      ))
     });
     if (!res.ok) throw new Error(`API returned ${res.status}: ${(await res.text()).slice(0, 200)}`);
     const data = await res.json();
     pending.remove();
-    addMessage(data.answer, 'bot', { meta: metaHtml(data), followups: data.followups, audio_base64: data.audio_base64 });
-    renderEvidence(data); renderTrace(data); renderMap(data);
+    addMessage(data.answer, 'bot', { meta: metaHtml(data), followups: data.followups, audio_base64: data.audio_base64, citations: data.citations });
+    renderEvidence(data); renderVerdict(data); renderModels(data); renderTrace(data); renderMap(data);
     if ((data.degraded_sources || []).length) {
       addMessage('Sources that degraded on this request: ' + data.degraded_sources.join(', '), 'bot');
     }
@@ -368,11 +774,27 @@ async function checkHealth() {
   try {
     const h = await (await fetch(`${API}/health`)).json();
     $('dot').className = 'dot up';
-    const llmName = h.llm_provider || h.llm;
-    const jevStatus = h.jev_configured ? 'Jev (cloud)' : 'Jev (emulator)';
-    const sarvamStatus = h.sarvam_voice_configured ? 'Sarvam AI' : 'Voice (offline)';
+
+    // Roles resolve independently: agentic work and synthesis can land on
+    // different providers, or fall back to templates. Show what each one got.
+    const r = h.llm_routing || {};
+    const shortModel = (m) => !m ? 'templates' : String(m).split('/').pop();
+    const agentic = r.agentic ? shortModel(r.agentic.model) : (h.llm_provider || 'templates');
+    const synth = r.synthesis ? shortModel(r.synthesis.model) : (h.llm_provider || 'templates');
+
+    const jev = h.jev || {};
+    const jevLabel = jev.configured
+      ? `Jev ${shortModel(jev.model)}`
+      : 'Jev (offline emulator)';
+    const sarvam = h.sarvam_voice_configured ? 'Sarvam AI' : 'Voice (offline)';
+
     $('statusText').textContent =
-      `${h.vector_rag.chunks} docs, ${h.geo_rag.zone_features} zones | LLM: ${llmName} | ${jevStatus} | ${sarvamStatus}`;
+      `${h.vector_rag.chunks} docs, ${h.geo_rag.zone_features} zones` +
+      ` | agentic: ${agentic} | synthesis: ${synth} | ${jevLabel} | ${sarvam}`;
+    $('statusText').title =
+      `agentic  : ${r.agentic ? r.agentic.provider + ' / ' + (r.agentic.model || 'none') : 'n/a'}\n` +
+      `synthesis: ${r.synthesis ? r.synthesis.provider + ' / ' + (r.synthesis.model || 'none') : 'n/a'}\n` +
+      `jev      : ${jev.endpoint || 'n/a'} (${jev.model || 'emulator'})`;
   } catch {
     $('dot').className = 'dot down';
     $('statusText').textContent = 'API unreachable';
@@ -417,6 +839,9 @@ async function sendVoice(blob) {
     formData.append('file', blob, 'deck_audio.wav');
     formData.append('language', $('langSelect').value);
     formData.append('session_id', SESSION);
+    const loc = locationPayload();
+    if (loc.lat !== undefined) { formData.append('lat', loc.lat); formData.append('lon', loc.lon); }
+    if (loc.place) formData.append('place', loc.place);
 
     const res = await fetch(`${API}/chat/voice`, {
       method: 'POST',
@@ -425,8 +850,8 @@ async function sendVoice(blob) {
     if (!res.ok) throw new Error(`Voice chat returned ${res.status}: ${(await res.text()).slice(0, 150)}`);
     const data = await res.json();
     pending.remove();
-    addMessage(data.answer, 'bot', { meta: metaHtml(data), followups: data.followups, audio_base64: data.audio_base64 });
-    renderEvidence(data); renderTrace(data); renderMap(data);
+    addMessage(data.answer, 'bot', { meta: metaHtml(data), followups: data.followups, audio_base64: data.audio_base64, citations: data.citations });
+    renderEvidence(data); renderVerdict(data); renderModels(data); renderTrace(data); renderMap(data);
     if (data.audio_base64) {
       new Audio('data:audio/wav;base64,' + data.audio_base64).play();
     }
@@ -444,12 +869,12 @@ SAMPLES.forEach(s => {
   $('samples').appendChild(b);
 });
 
+const PANELS = ['evidence', 'verdict', 'models', 'trace'];
 document.querySelectorAll('.tabs button').forEach(btn => {
   btn.onclick = () => {
     document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('on'));
     btn.classList.add('on');
-    $('evidence').style.display = btn.dataset.tab === 'evidence' ? '' : 'none';
-    $('trace').style.display = btn.dataset.tab === 'trace' ? '' : 'none';
+    PANELS.forEach(p => { $(p).style.display = btn.dataset.tab === p ? '' : 'none'; });
   };
 });
 
@@ -460,6 +885,7 @@ $('form').onsubmit = (e) => {
 };
 
 initMap();
+initLocationBar();
 checkHealth();
 addMessage(
   'I am ORCA. Ask me about sea conditions, whether it is safe to go out, tides, '

@@ -230,6 +230,9 @@ class RiskAssessmentAgent:
 
             gust_peak = weather.get("gust_peak_kt")
             if gust_peak is not None and gust_peak >= settings.gust_danger_kt:
+                gust_id = (weather.get("fields", {}).get("gust") or {}).get(
+                    "evidence_id", ""
+                )
                 findings.append(
                     RiskFinding(
                         rule="gust_danger",
@@ -239,11 +242,18 @@ class RiskAssessmentAgent:
                             "knock a small boat down even when the mean wind looks "
                             "manageable."
                         ),
+                        evidence_ids=[gust_id] if gust_id else [],
                     )
                 )
 
             convective = weather.get("convective_risk") or {}
             if convective.get("band") in ("high", "moderate"):
+                cape_id = (weather.get("fields", {}).get("cape") or {}).get(
+                    "evidence_id", ""
+                )
+                rain_id = (weather.get("fields", {}).get("rain") or {}).get(
+                    "evidence_id", ""
+                )
                 findings.append(
                     RiskFinding(
                         rule="convective_risk",
@@ -258,6 +268,7 @@ class RiskAssessmentAgent:
                             f"{convective['cape_j_per_kg']:.0f} J/kg). This is a "
                             "derived indicator, not an observed lightning strike."
                         ),
+                        evidence_ids=[i for i in (cape_id, rain_id) if i],
                     )
                 )
 
@@ -301,6 +312,9 @@ class RiskAssessmentAgent:
 
             current = (ocean.get("fields", {}).get("current") or {}).get("value")
             if current is not None and current >= settings.current_caution_cms:
+                current_id = (ocean.get("fields", {}).get("current") or {}).get(
+                    "evidence_id", ""
+                )
                 findings.append(
                     RiskFinding(
                         rule="strong_current",
@@ -309,6 +323,7 @@ class RiskAssessmentAgent:
                             f"Surface current about {current:.0f} cm/s. Allow for "
                             "set and drift, and for extra fuel on the return leg."
                         ),
+                        evidence_ids=[current_id] if current_id else [],
                     )
                 )
 
@@ -393,9 +408,13 @@ class RiskAssessmentAgent:
                     rule=f"jev_{jev_dec.action.lower()}",
                     band=jev_band,
                     detail=(
-                        f"TypeSafe AI Jev Judgment: {jev_dec.safety_verdict} ({jev_dec.action}). "
-                        f"Risk score: {jev_dec.risk_score:.0f}/100, Breach risk: {jev_dec.breach_probability*100:.0f}%, "
-                        f"Capsizing risk: {jev_dec.capsizing_probability*100:.0f}%. [{jev_dec.engine}]"
+                        f"Jev System-One judgment: {jev_dec.safety_verdict} "
+                        f"({jev_dec.action}). Severity {jev_dec.risk_score:.0f}/100, "
+                        f"boundary breach {jev_dec.breach_probability * 100:.0f}%, "
+                        f"capsizing {jev_dec.capsizing_probability * 100:.0f}%, "
+                        f"confidence {jev_dec.confidence:.2f}. This is a structured "
+                        f"second opinion from {jev_dec.engine}; it can only make the "
+                        "verdict more conservative, never less."
                     ),
                     evidence_ids=[],
                 )
@@ -407,8 +426,14 @@ class RiskAssessmentAgent:
                 "breach_probability": jev_dec.breach_probability,
                 "capsizing_probability": jev_dec.capsizing_probability,
                 "engine": jev_dec.engine,
+                "model": jev_dec.model,
                 "confidence": jev_dec.confidence,
+                "verdict_probabilities": jev_dec.verdict_probabilities,
                 "rationale": jev_dec.rationale,
+                "input_tokens": jev_dec.input_tokens,
+                "output_tokens": jev_dec.output_tokens,
+                "cost_usd": jev_dec.cost_usd,
+                "elapsed_ms": jev_dec.elapsed_ms,
             }
 
             band = RiskBand.UNKNOWN
@@ -472,10 +497,13 @@ class RiskAssessmentAgent:
         where = ctx.location.name if ctx.location else "this position"
         when = ctx.window.label if ctx.window else "now"
         return {
-            RiskBand.SAFE: f"Conditions off {where} look workable {when}.",
-            RiskBand.CAUTION: f"Go carefully off {where} {when}.",
-            RiskBand.UNSAFE: f"Do not venture out off {where} {when}.",
-            RiskBand.UNKNOWN: f"Not enough data to judge conditions off {where}.",
+            RiskBand.SAFE: f"Yes, you can go out off {where} {when}.",
+            RiskBand.CAUTION: f"You can go out off {where} {when}, but be careful.",
+            RiskBand.UNSAFE: f"Do not go out off {where} {when}.",
+            RiskBand.UNKNOWN: (
+                f"I cannot say whether it is safe off {where} {when}. Not enough "
+                "information came through."
+            ),
         }[band]
 
     def _window_advice(self, ctx: AgentContext) -> str:
@@ -489,9 +517,9 @@ class RiskAssessmentAgent:
             return ""
         if peak - now > 0.4 and peak_time:
             return (
-                f"Sea builds through the window, peaking near {peak_time} at "
-                f"{peak:.1f} m. Earlier is better than later."
+                f"The sea gets rougher as the day goes on, worst around {peak_time} "
+                f"at about {peak:.1f} m. Go early if you go at all."
             )
         if now - peak > 0.4:
-            return "Sea is easing through the window."
+            return "The sea is settling down through the day."
         return ""

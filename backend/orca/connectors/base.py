@@ -81,6 +81,36 @@ class _MemoryCache:
 _MEM = _MemoryCache()
 
 
+def _ssl_context() -> Any:
+    """Verify TLS against the operating system trust store when we can.
+
+    Several Indian government hosts serve an incomplete certificate chain.
+    `erddap.incois.gov.in` is one: it omits its intermediate, so verification
+    against certifi's bundle fails with "unable to get local issuer certificate"
+    even though the certificate itself is perfectly valid. Browsers and the OS
+    succeed because they cache or fetch the missing intermediate.
+
+    `truststore` delegates to the OS store, which fixes those hosts while
+    keeping verification fully on. Turning verification off would have been the
+    easy fix and the wrong one, so it is not an option here. If truststore is
+    not installed we fall back to normal certifi verification and the affected
+    connector degrades and says so.
+    """
+    try:
+        import ssl
+
+        import truststore
+
+        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    except Exception as exc:  # noqa: BLE001 - any failure means "use the default"
+        log.info(
+            "OS trust store unavailable (%s); falling back to certifi. Hosts with "
+            "an incomplete chain may fail to verify.",
+            exc,
+        )
+        return True
+
+
 class HttpConnector:
     """Base class: subclasses get `self.get_text`, `self.get_json`, health."""
 
@@ -105,6 +135,7 @@ class HttpConnector:
                     HttpConnector._client = httpx.AsyncClient(
                         timeout=httpx.Timeout(s.http_timeout_s),
                         follow_redirects=True,
+                        verify=_ssl_context(),
                         headers={
                             # Some .gov.in WAFs 403 non-browser UAs. We identify
                             # ORCA in the Accept chain instead of spoofing wholly.
@@ -195,11 +226,20 @@ class HttpConnector:
                 else:
                     body = None
                     if as_json:
-                        try:
-                            body = resp.json()
-                        except ValueError as exc:
-                            last_error = f"bad json: {exc}"
-                            break
+                        # 204, or a 200 with nothing in it, means "no data" and
+                        # not "broken". Reporting it as a JSON parse error made a
+                        # working endpoint look like an outage.
+                        if resp.status_code == 204 or not resp.content.strip():
+                            body = None
+                        else:
+                            try:
+                                body = resp.json()
+                            except ValueError as exc:
+                                ctype = resp.headers.get("content-type", "unknown")
+                                last_error = (
+                                    f"expected json, got {ctype}: {exc}"
+                                )
+                                break
                     outcome = FetchOutcome(
                         ok=True,
                         url=str(resp.url),

@@ -15,11 +15,25 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from ..geo import gazetteer
+from ..llm import LlmRole
 from ..rag import router
 from ..rag.router import KnowledgeDomain
 from ..schemas import Intent, Location, Plan, Task, TimeWindow
 from ..services import Services
 from .base import Trace
+
+#: How far from Indian waters a place can be and still be worth answering for.
+#: A landing centre sits a little inland of the EEZ polygon's landward edge, and
+#: the polygon itself is coarse, so a small tolerance is needed. Bengaluru is
+#: ~290 km from the sea, so this comfortably separates coastal from inland.
+COASTAL_TOLERANCE_KM = 30.0
+
+#: UI affordance labels that must never be printed as though they were a place.
+#: The browser sends these to say *how* a position was obtained, not where it is.
+_UI_PIN_LABELS = {
+    "picked on map", "device gps", "typed", "your position", "pinned",
+    "map pin", "gps",
+}
 
 #: intents that are meaningless without a position
 NEEDS_LOCATION = {
@@ -58,6 +72,26 @@ Intents:
 Question: {message}
 
 Reply as JSON: {{"intent": "<one of the ids above>", "confidence": 0.0-1.0, "why": "<12 words>"}}
+"""
+
+
+GEOCODE_PROMPT = """Locate this place for a marine question about Indian waters.
+
+Place as the user wrote it: "{place}"
+Full question for context: "{message}"
+
+Reply as JSON only:
+{{"name": "<the standard English name>",
+  "lat": <decimal degrees, positive north>,
+  "lon": <decimal degrees, positive east>,
+  "country": "<country>",
+  "kind": "<one of: harbour, landing-centre, beach, coastal-town, inland-city, sea-area, unknown>",
+  "confident": <true or false>}}
+
+Rules:
+- Give the real coordinates. Do not invent a plausible-looking pair.
+- If you genuinely do not know the place, set "confident": false and lat/lon to 0.
+- "kind" is your reading of the place itself, not of the question.
 """
 
 
@@ -103,7 +137,7 @@ class PlannerAgent:
             classification = await self._llm_arbitrate(message, classification, trace)
 
         # ---- 2. resolve where ------------------------------------------- #
-        location = self._resolve_location(
+        location, refusal = await self._resolve_location(
             message, session_id=session_id, lat=lat, lon=lon, place=place, trace=trace
         )
         dest = self._resolve_destination(message, destination, location, trace)
@@ -126,9 +160,12 @@ class PlannerAgent:
         if classification.intent in NEEDS_LOCATION and (
             location is None or location.source == "default"
         ):
-            clarification = (
+            # The resolver already worked out *why* it could not place the user,
+            # so reuse that rather than second-guessing it here.
+            clarification = refusal or (
                 "I need a location for this. Tell me the harbour or landing "
-                "centre you are sailing from, or send your latitude and longitude."
+                "centre you are sailing from, or send your latitude and "
+                "longitude."
             )
 
         plan = Plan(
@@ -162,17 +199,20 @@ class PlannerAgent:
     async def _llm_arbitrate(
         self, message: str, current: router.Classification, trace: Trace
     ) -> router.Classification:
+        provider, model = await self.services.llm.resolve_role(LlmRole.AGENTIC)
         with trace.timed(
             self.name,
-            "escalate ambiguous intent to the LLM",
+            "escalate ambiguous intent to the agentic model",
             rationale=(
                 f"lexical confidence {current.confidence:.2f} is below the 0.55 "
-                "threshold, so a second opinion is worth the latency"
+                "threshold, so a second opinion from a reasoning model is worth "
+                "the latency"
             ),
             tool="llm-classifier",
+            tool_args={"provider": provider, "model": model},
         ) as step:
             payload = await self.services.llm.complete_json(
-                LLM_INTENT_PROMPT.format(message=message)
+                LLM_INTENT_PROMPT.format(message=message), role=LlmRole.AGENTIC
             )
             if not payload or "intent" not in payload:
                 step.status = "degraded"
@@ -200,7 +240,88 @@ class PlannerAgent:
 
     # ------------------------------------------------------------- location #
 
-    def _resolve_location(
+    async def _geocode_agent(
+        self, phrase: str, message: str, trace: Trace
+    ) -> tuple[Location | None, str, float | None]:
+        """Resolve a place the gazetteer does not know, then verify it by geometry.
+
+        Two steps, deliberately split. The model supplies coordinates, which is
+        knowledge retrieval and the sort of thing it is good at. Whether those
+        coordinates are at sea is then decided by measuring against the India EEZ
+        polygon, which is geometry and not a matter of opinion. So a hallucinated
+        harbour in the middle of the Deccan gets caught by the distance check
+        rather than being taken on trust.
+
+        Returns (location, verdict, distance_km) where verdict is one of
+        "coastal", "inland", "unknown".
+        """
+        with trace.timed(
+            self.name,
+            f"look up {phrase!r}, which is not in the gazetteer",
+            rationale=(
+                "the built-in gazetteer covers 58 places; rather than refusing "
+                "everything else, the agentic model supplies coordinates and the "
+                "EEZ polygon decides whether they are at sea"
+            ),
+            tool="geocode-agent",
+            tool_args={"place": phrase},
+        ) as step:
+            payload = await self.services.llm.complete_json(
+                GEOCODE_PROMPT.format(place=phrase, message=message[:300]),
+                role=LlmRole.AGENTIC,
+                max_tokens=300,
+            )
+            if not payload or not payload.get("confident"):
+                step.status = "degraded"
+                step.outcome = (
+                    "no coordinates could be resolved for this place"
+                    if payload
+                    else "no agentic model available to resolve it"
+                )
+                return None, "unknown", None
+
+            try:
+                lat = float(payload["lat"])
+                lon = float(payload["lon"])
+            except (KeyError, TypeError, ValueError):
+                step.status = "degraded"
+                step.outcome = "the reply did not contain usable coordinates"
+                return None, "unknown", None
+
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180) or (lat == 0 and lon == 0):
+                step.status = "degraded"
+                step.outcome = f"coordinates {lat},{lon} are not usable"
+                return None, "unknown", None
+
+            name = str(payload.get("name") or phrase).strip() or phrase
+            distance = await self.services.geo_rag.distance_to_sea_km(lat, lon)
+            if distance is None:
+                step.status = "degraded"
+                step.outcome = (
+                    f"{name} resolved to {lat:.3f}N {lon:.3f}E but the EEZ polygon "
+                    "is unavailable, so I cannot confirm it is at sea"
+                )
+                return None, "unknown", None
+
+            location = Location(
+                name=name, lat=lat, lon=lon, source="geocode-agent",
+                state=str(payload.get("country") or ""),
+            )
+            if distance <= COASTAL_TOLERANCE_KM:
+                step.outcome = (
+                    f"{name} at {lat:.3f}N {lon:.3f}E is {distance:.0f} km from "
+                    "Indian waters, close enough to answer for"
+                )
+                return location, "coastal", distance
+
+            step.status = "degraded"
+            step.outcome = (
+                f"{name} at {lat:.3f}N {lon:.3f}E is {distance:.0f} km inland from "
+                "Indian waters, so there is no sea state to report"
+            )
+            return location, "inland", distance
+
+    async def _resolve_location(
         self,
         message: str,
         *,
@@ -209,21 +330,82 @@ class PlannerAgent:
         lon: float | None,
         place: str | None,
         trace: Trace,
-    ) -> Location | None:
+    ) -> tuple[Location | None, str]:
+        """Resolve where the question is about.
+
+        Returns (location, refusal). A refusal string is set when we deliberately
+        decline to answer rather than substituting somewhere else, and it is what
+        the user is shown.
+        """
         with trace.timed(
             self.name,
             "resolve location",
             rationale=(
-                "precedence: GPS from the client, then coordinates typed in the "
-                "message, then a gazetteer match, then the location from earlier "
-                "in this conversation"
+                "precedence: a place named in the question, then GPS from the "
+                "client, then typed coordinates, then the gazetteer, then the "
+                "geocoding agent verified against the EEZ polygon, then the "
+                "location from earlier in this conversation"
             ),
             tool="gazetteer",
         ) as step:
+            # A place named in the question is considered before a pinned
+            # position. Otherwise "can I go to sea at Bengaluru" silently answers
+            # about whatever pin is on the map, which ignores the question rather
+            # than answering it.
+            named_phrase = gazetteer.unresolved_place(message)
+            gazetteer_hits = gazetteer.find_all_places(message)
+
+            if named_phrase and not gazetteer_hits:
+                located, verdict, distance = await self._geocode_agent(
+                    named_phrase, message, trace
+                )
+                if verdict == "coastal" and located is not None:
+                    step.outcome = (
+                        f"{located.name} resolved by the geocoding agent and "
+                        f"confirmed {distance:.0f} km from Indian waters"
+                    )
+                    return located, ""
+                if verdict == "inland" and located is not None:
+                    step.status = "degraded"
+                    step.outcome = (
+                        f"{located.name} is {distance:.0f} km inland; refusing to "
+                        "answer about a coastal position instead"
+                    )
+                    return None, (
+                        f"{located.name} is about {distance:.0f} km inland, so "
+                        "there is no sea there to report on. If you are heading to "
+                        "the coast, tell me the harbour or landing centre you will "
+                        "sail from, or send a latitude and longitude."
+                    )
+                # the agent could not place it; fall back to the offline list
+                offline = gazetteer.find_inland(message)
+                if offline:
+                    step.status = "degraded"
+                    step.outcome = f"{offline[0]} is inland (offline list)"
+                    return None, (
+                        f"{offline[0]} is inland, so there is no sea there to "
+                        f"report on. The nearest coast I cover is {offline[1]}, so "
+                        f"you could ask \"is it safe off {offline[1]} tomorrow "
+                        "morning\", or send a latitude and longitude."
+                    )
+                if lat is None or lon is None:
+                    step.status = "degraded"
+                    step.outcome = f"could not place {named_phrase!r}"
+                    return None, (
+                        f"I could not work out where \"{named_phrase}\" is, and I "
+                        "am not going to answer about somewhere else instead. Give "
+                        "me the nearest harbour or landing centre, or your "
+                        "latitude and longitude."
+                    )
+
             if lat is not None and lon is not None:
+                # A pinned position is a coordinate, not a place name. Naming it
+                # after a UI label produced answers like "off picked on map".
+                label = (place or "").strip()
+                if not label or label.lower() in _UI_PIN_LABELS:
+                    label = f"{lat:.3f}N {lon:.3f}E"
                 step.outcome = f"client position {lat:.3f}N {lon:.3f}E"
-                return Location(name=place or "your position", lat=lat, lon=lon,
-                                source="explicit")
+                return Location(name=label, lat=lat, lon=lon, source="explicit"), ""
 
             typed = gazetteer.parse_coords(message)
             if typed:
@@ -231,7 +413,7 @@ class PlannerAgent:
                 return Location(
                     name="the position you gave", lat=typed[0], lon=typed[1],
                     source="explicit",
-                )
+                ), ""
 
             if place:
                 named = gazetteer.find_place(place)
@@ -243,11 +425,11 @@ class PlannerAgent:
                         name=named.name, lat=named.lat, lon=named.lon,
                         source="gazetteer", district=named.district,
                         state=named.state,
-                    )
+                    ), ""
 
             # first place *mentioned* wins, so "from Chennai to Kakinada" keeps
             # Chennai as the origin rather than whichever name is longer
-            mentioned = gazetteer.find_all_places(message)
+            mentioned = gazetteer_hits
             hit = mentioned[0] if mentioned else None
             if hit:
                 step.outcome = (
@@ -257,7 +439,7 @@ class PlannerAgent:
                 return Location(
                     name=hit.name, lat=hit.lat, lon=hit.lon, source="gazetteer",
                     district=hit.district, state=hit.state,
-                )
+                ), ""
 
             remembered = self.services.last_location(session_id)
             if remembered:
@@ -270,7 +452,7 @@ class PlannerAgent:
                     lat=remembered[0],
                     lon=remembered[1],
                     source="session",
-                )
+                ), ""
 
             step.status = "degraded"
             step.outcome = "no location found; will ask the user"
@@ -282,7 +464,7 @@ class PlannerAgent:
                 source="default",
                 district=fallback.district,
                 state=fallback.state,
-            )
+            ), ""
 
     def _resolve_destination(
         self,

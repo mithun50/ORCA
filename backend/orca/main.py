@@ -96,11 +96,19 @@ app.add_middleware(
 async def health() -> dict[str, Any]:
     services = get_services()
     llm_provider = await services.llm.provider()
+    jev = get_jev_engine()
     return {
         "status": "ok",
         "warm_up": getattr(app.state, "warm_up", {}),
         "llm_provider": llm_provider,
-        "jev_configured": get_jev_engine().is_configured,
+        "llm_routing": await services.llm.routing(),
+        "jev": {
+            "configured": jev.is_configured,
+            "provider": jev.provider,
+            "model": jev.model,
+            "endpoint": jev.endpoint,
+        },
+        "jev_configured": jev.is_configured,
         "sarvam_voice_configured": get_voice_client().is_configured,
         **services.health(),
     }
@@ -509,6 +517,9 @@ class SynthesizeRequest(BaseModel):
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     #: merged `trace` arrays, so the final response keeps the full n8n trace
     trace: list[dict[str, Any]] = Field(default_factory=list)
+    #: set false to force deterministic template synthesis. The n8n critic uses
+    #: this on its repair pass after it rejects an LLM rewrite.
+    allow_llm: bool = True
 
 
 @app.post("/internal/synthesize", response_model=ChatResponse)
@@ -579,6 +590,7 @@ async def internal_synthesize(request: SynthesizeRequest) -> ChatResponse:
 
     await orchestrator.run_agent("risk-assessment", ctx)
     await orchestrator.run_agent("visualisation", ctx)
+    ctx.findings.diagnosis["allow_llm"] = request.allow_llm
     await orchestrator.run_agent("synthesis", ctx)
 
     services = get_services()
@@ -595,6 +607,7 @@ async def internal_synthesize(request: SynthesizeRequest) -> ChatResponse:
         window=ctx.window,
         risk=ctx.risk,
         evidence=ctx.evidence.all(),
+        citations=ctx.citations,
         trace=trace.steps,
         layers=ctx.layers,
         charts=ctx.charts,
@@ -602,6 +615,10 @@ async def internal_synthesize(request: SynthesizeRequest) -> ChatResponse:
         degraded_sources=services.registry.degraded(),
         llm_used=bool(ctx.findings.diagnosis.get("llm_used")),
         language=ctx.findings.diagnosis.get("language") or ctx.language_hint or "en",
+        audience=ctx.audience.audience.value if ctx.audience else "fisherman",
+        audience_confidence=ctx.audience.confidence if ctx.audience else 0.0,
+        model_roles=orchestrator._model_roles(ctx),
+        cost=orchestrator._cost_summary(orchestrator._model_roles(ctx), ctx),
         audio_base64=ctx.findings.diagnosis.get("audio_base64"),
     )
 

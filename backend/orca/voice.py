@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import re
 import struct
 import wave
 from dataclasses import dataclass
@@ -48,6 +49,79 @@ REVERSE_LOCALE_MAP: dict[str, str] = {
 }
 
 
+#: Speakers that exist on more than one Bulbul generation. Sarvam retires
+#: speakers between model versions (`meera` used to be the default and is now
+#: gone), and the 400 it returns names the valid set. Rather than pinning a name
+#: that will rot, the client retries once with a speaker from this list.
+SAFE_SPEAKERS: tuple[str, ...] = ("ritu", "priya", "neha", "aditya", "rahul")
+
+#: Sarvam rejects any single input longer than this, so long answers are split
+#: at sentence boundaries and the returned clips are stitched back together.
+TTS_CHUNK_LIMIT = 480
+
+
+def split_for_tts(text: str, limit: int = TTS_CHUNK_LIMIT) -> list[str]:
+    """Split on sentence ends, then on words, so no chunk exceeds `limit`."""
+    clean = " ".join(text.split())
+    if not clean:
+        return []
+    if len(clean) <= limit:
+        return [clean]
+
+    chunks: list[str] = []
+    current = ""
+    for sentence in re.split(r"(?<=[.!?;:])\s+", clean):
+        # a single sentence longer than the limit has to be broken on words
+        while len(sentence) > limit:
+            head = sentence[:limit].rsplit(" ", 1)[0] or sentence[:limit]
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(head)
+            sentence = sentence[len(head):].lstrip()
+        if not sentence:
+            continue
+        if len(current) + len(sentence) + 1 <= limit:
+            current = f"{current} {sentence}".strip()
+        else:
+            if current:
+                chunks.append(current)
+            current = sentence
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def concat_wav(clips: list[bytes]) -> bytes:
+    """Join 16-bit PCM WAV clips that share a format into one stream."""
+    usable = [c for c in clips if c and len(c) > 44 and c.startswith(b"RIFF")]
+    if not usable:
+        return b""
+    if len(usable) == 1:
+        return usable[0]
+    params = None
+    frames: list[bytes] = []
+    for clip in usable:
+        try:
+            with io.BytesIO(clip) as src, wave.open(src, "rb") as r:
+                if params is None:
+                    params = (r.getnchannels(), r.getsampwidth(), r.getframerate())
+                elif (r.getnchannels(), r.getsampwidth(), r.getframerate()) != params:
+                    continue  # a clip in a different format would sound wrong
+                frames.append(r.readframes(r.getnframes()))
+        except (wave.Error, EOFError):
+            continue
+    if params is None or not frames:
+        return usable[0]
+    out = io.BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setnchannels(params[0])
+        w.setsampwidth(params[1])
+        w.setframerate(params[2])
+        w.writeframes(b"".join(frames))
+    return out.getvalue()
+
+
 @dataclass
 class SttResult:
     transcript: str
@@ -64,6 +138,10 @@ class TtsResult:
     target_language: str
     speaker: str
     provider: str = "sarvam-bulbul"
+    #: how many <=480 char chunks the answer was split into
+    chunks: int = 1
+    #: characters actually sent, which is what Sarvam bills on
+    characters: int = 0
 
 
 class AcousticFilter:
@@ -229,9 +307,12 @@ class SarvamVoiceClient:
 
         url = f"{self.settings.sarvam_base.rstrip('/')}/text-to-speech"
         key = self.settings.effective_sarvam_api_key
+        chunks = split_for_tts(text)
+        if not chunks:
+            return self._mock_tts(text, target_lang, selected_speaker)
 
         payload = {
-            "inputs": [text[:2500]],
+            "inputs": chunks,
             "target_language_code": target_lang,
             "speaker": selected_speaker,
             "pitch": 0.0,
@@ -239,36 +320,73 @@ class SarvamVoiceClient:
             "loudness": 1.0,
             "speech_sample_rate": 22050,
             "enable_preprocessing": True,
-            "model": self.settings.sarvam_tts_model or "bulbul:v1",
+            "model": self.settings.sarvam_tts_model or "bulbul:v3",
         }
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(
-                    url,
-                    headers={
-                        "api-subscription-key": key,
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                )
-                if resp.status_code != 200:
-                    log.warning("Sarvam TTS failed (%s): %s", resp.status_code, resp.text[:200])
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                body = None
+                speaker_used = selected_speaker
+                for candidate_speaker in self._speaker_candidates(selected_speaker):
+                    payload["speaker"] = candidate_speaker
+                    resp = await client.post(
+                        url,
+                        headers={
+                            "api-subscription-key": key,
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    )
+                    if resp.status_code == 200:
+                        body = resp.json()
+                        speaker_used = candidate_speaker
+                        break
+                    detail = resp.text[:300]
+                    log.warning(
+                        "Sarvam TTS failed (%s) with speaker %r: %s",
+                        resp.status_code,
+                        candidate_speaker,
+                        detail,
+                    )
+                    # Only a speaker/model mismatch is worth another attempt.
+                    if "speaker" not in detail.lower():
+                        break
+                if body is None:
                     return self._mock_tts(text, target_lang, selected_speaker)
-                body = resp.json()
                 audios = body.get("audios", [])
                 if not audios:
                     return self._mock_tts(text, target_lang, selected_speaker)
+                # one clip per input chunk; stitch them into a single answer
+                clips: list[bytes] = []
+                for encoded in audios:
+                    try:
+                        clips.append(base64.b64decode(encoded))
+                    except Exception:  # noqa: BLE001 - skip a bad clip, keep the rest
+                        continue
+                merged = concat_wav(clips)
+                if not merged:
+                    return self._mock_tts(text, target_lang, selected_speaker)
                 return TtsResult(
-                    audio_base64=audios[0],
+                    audio_base64=base64.b64encode(merged).decode("ascii"),
                     audio_format="wav",
                     target_language=target_lang,
-                    speaker=selected_speaker,
+                    speaker=speaker_used,
                     provider="sarvam-bulbul",
+                    chunks=len(chunks),
+                    characters=sum(len(c) for c in chunks),
                 )
         except Exception as exc:
             log.warning("Error invoking Sarvam TTS: %s", exc)
             return self._mock_tts(text, target_lang, selected_speaker)
+
+    @staticmethod
+    def _speaker_candidates(preferred: str) -> list[str]:
+        """The configured speaker first, then known cross-version fallbacks."""
+        out = [preferred]
+        for name in SAFE_SPEAKERS:
+            if name not in out:
+                out.append(name)
+        return out[:3]
 
     def _mock_tts(self, text: str, target_lang: str, speaker: str) -> TtsResult:
         """Generates a valid 16-bit PCM RIFF/WAV tone byte stream encoded in base64."""
@@ -296,6 +414,8 @@ class SarvamVoiceClient:
             target_language=target_lang,
             speaker=speaker,
             provider="mock-bulbul-offline",
+            chunks=1,
+            characters=len(text),
         )
 
 

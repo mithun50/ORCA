@@ -41,7 +41,10 @@ class Settings(BaseSettings):
     imd_api_key: str = ""  # IMD issues these on request; 401 without one
     openmeteo_marine_base: str = "https://marine-api.open-meteo.com/v1/marine"
     openmeteo_forecast_base: str = "https://api.open-meteo.com/v1/forecast"
-    gdacs_base: str = "https://www.gdacs.org/gdcsapi/api/events/geteventlist/SEARCH"
+    # NOTE: the host path is `gdacsapi`, not `gdcsapi`. The typo silently
+    # returned GDACS's HTML admin page with HTTP 200, which then failed JSON
+    # parsing and made the connector look like an upstream outage for months.
+    gdacs_base: str = "https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH"
     marine_regions_wfs: str = "https://geo.vliz.be/geoserver/MarineRegions/wfs"
     nasa_cmr_base: str = "https://cmr.earthdata.nasa.gov/search"
 
@@ -62,23 +65,52 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_base: str = "https://api.openai.com/v1"
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.5-flash"
     openrouter_api_key: str = ""
     openrouter_base: str = "https://openrouter.ai/api/v1"
-    openrouter_model: str = "anthropic/claude-3.5-sonnet"
+    openrouter_model: str = "z-ai/glm-5.2"
     llm_timeout_s: float = 60.0
 
-    # --- Jev / TypeSafe AI Decision Engine (optional) ---
+    # --- role based model routing -------------------------------------- #
+    # Two jobs, two very different models. Agentic work (intent arbitration,
+    # structured decisions) wants a reasoning model; natural language synthesis
+    # wants a fast, fluent, multilingual one. Either role falls back to the
+    # generic auto-resolved provider if its own provider has no key.
+    #
+    # agentic: classification, arbitration, structured judgment
+    llm_agentic_provider: str = "openrouter"
+    llm_agentic_model: str = "z-ai/glm-5.2"
+    # synthesis: wording and Indian regional language translation.
+    # Served through OpenRouter so one key covers every role. Gemini Flash is
+    # the right shape here: fast, strong on Indian languages, and a fraction of
+    # the cost of a reasoning model for what is only a rewording job.
+    llm_synthesis_provider: str = "openrouter"
+    llm_synthesis_model: str = "google/gemini-3.8-flash"
+
+    # --- Jev System-One structured decision engine (optional) ---
+    # Jev is TypeSafe AI's System One model: it returns typed decisions
+    # (choice / score / noul) with calibrated probabilities instead of prose.
+    # Two transports, same wire protocol:
+    #   openrouter -> POST {jev_base}/decisions   model typesafe/jev-1.13
+    #   typesafe   -> POST {jev_base}/systemone   model jev-latest
+    # NOTE: OpenRouter rejects `typesafe/jev-latest`; only the versioned slug
+    # resolves there. TypeSafe's own endpoint does accept the alias.
+    jev_provider: str = "openrouter"
     jev_api_key: str = ""
-    jev_base: str = "https://api.typesafe.ai/v1"
-    jev_model: str = "jev-latest"
+    jev_base: str = "https://openrouter.ai/api/alpha"
+    jev_model: str = "typesafe/jev-1.13"
+    jev_timeout_s: float = 20.0
 
     # --- Sarvam AI Voice Engine: STT & TTS (optional) ---
+    # Verified against the live API on 2026-09-22. bulbul:v1 and v2 are
+    # deprecated; valid TTS models are bulbul:v3-beta, bulbul:v3 and
+    # bulbul:v4-flash, and each accepts a different speaker set. `meera` (the old
+    # default) is no longer a valid speaker on any of them.
     sarvam_api_key: str = ""
     sarvam_base: str = "https://api.sarvam.ai"
     sarvam_stt_model: str = "saaras:v3"
-    sarvam_tts_model: str = "bulbul:v1"
-    sarvam_speaker: str = "meera"
+    sarvam_tts_model: str = "bulbul:v3"
+    sarvam_speaker: str = "ritu"
 
     # --- retrieval ---
     qdrant_url: str = ""
@@ -117,7 +149,12 @@ class Settings(BaseSettings):
 
     @property
     def effective_jev_api_key(self) -> str:
-        return self.jev_api_key or os.environ.get("JEV_API_KEY", "") or os.environ.get("TYPESAFE_API_KEY", "")
+        """Jev runs on OpenRouter, so the OpenRouter key serves it by default."""
+        return (
+            self.jev_api_key
+            or os.environ.get("JEV_API_KEY", "")
+            or self.effective_openrouter_api_key
+        )
 
 
 @lru_cache

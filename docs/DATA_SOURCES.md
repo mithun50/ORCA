@@ -104,10 +104,56 @@ HTML pages and degrades gracefully.
 |---|---|---|---|
 | Open-Meteo Marine | `https://marine-api.open-meteo.com/v1/marine` | verified | live SWH, swell, `sea_level_height_msl` (tide), sea surface temp |
 | Open-Meteo Forecast | `https://api.open-meteo.com/v1/forecast` | verified | wind, gusts, precip, CAPE, visibility |
-| GDACS | `https://www.gdacs.org/gdcsapi/api/events/geteventlist/SEARCH?eventlist=TC` | verified (17 kB) | tropical cyclone alert polygons |
+| GDACS | `https://www.gdacs.org/gdcsapi/api/events/geteventlist/SEARCH?eventlist=TC` | **failing as of 2026-09-22** | tropical cyclone alert polygons |
 | Marine Regions WFS | `https://geo.vliz.be/geoserver/MarineRegions/wfs` | verified (2.2 MB GeoJSON for India EEZ) | EEZ polygon, IMBL geofencing |
 | NASA CMR | `https://cmr.earthdata.nasa.gov/search/collections.json` | verified | dataset discovery for the discovery agent |
 | NOAA CoastWatch ERDDAP | `https://coastwatch.noaa.gov/erddap` | verified | science-quality chlorophyll cross-check |
+
+The GDACS regression was found on 2026-09-22: the endpoint answers but the body
+is empty, so JSON parsing fails with `Expecting value: line 3 column 1 (char 4)`.
+The connector returns an empty event list, `gdacs` appears in
+`degraded_sources`, and the `tropical_cyclone_distance` risk rule therefore
+cannot fire. Nothing else compensates for it, which makes this the most
+consequential open data gap in the system.
+
+## AI services (not data sources, but external dependencies)
+
+All optional. ORCA answers every supported query with none of them configured.
+
+| Service | Endpoint | Role | Without a key |
+|---|---|---|---|
+| GLM 5.2 via OpenRouter | `POST https://openrouter.ai/api/v1/chat/completions`, model `z-ai/glm-5.2` | agentic: intent arbitration when lexical confidence < 0.55 | the lexical verdict stands |
+| Google Gemini | `POST generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent` | synthesis: wording and regional language translation | the deterministic template draft is the answer |
+| Jev System-One via OpenRouter | `POST https://openrouter.ai/api/alpha/decisions`, model `typesafe/jev-1.13` | typed safety decisions: choice, score, noul | offline rule emulator, labelled `jev-rule-emulator` |
+| Jev System-One direct | `POST https://api.typesafe.ai/v1/systemone`, model `jev-latest` | same, alternate transport | same |
+| Sarvam Saaras | `POST https://api.sarvam.ai/speech-to-text` | STT for coastal Indian languages | canned sample transcript, labelled `mock-saaras-offline` |
+| Sarvam Bulbul | `POST https://api.sarvam.ai/text-to-speech` | TTS in the detected language | synthetic beep WAV, labelled `mock-bulbul-offline` |
+
+Notes on Jev, since it is the least familiar of these:
+
+- It is a decision model, not a chat model. One `state` plus a map of typed
+  `questions` in, typed `answers` keyed by the same ids out. It does not generate
+  prose, and chat-completions SDKs do not work against it.
+- On OpenRouter it is served by the **Decisions API** at `/api/alpha/decisions`,
+  which is a different endpoint from the OpenAI-compatible chat one. The wire
+  protocol is near-identical to TypeSafe's own `/v1/systemone`. Note that
+  OpenRouter only accepts the versioned slug `typesafe/jev-1.13`; the
+  `typesafe/jev-latest` alias returns
+  `400 Model typesafe/jev-latest does not exist` there, though TypeSafe's own
+  endpoint accepts it. Verified live on 2026-09-22, which answered as
+  `typesafe/jev-1.13-20260917`.
+- `choice` takes `criteria` as a map of option to rubric text and answers with a
+  full probability distribution plus `confidence`. `score` takes `criteria` as an
+  ordered array of 2 to 10 level descriptions and answers with a
+  probability-weighted float over the level indices, so it can land between
+  levels. `noul` answers with a single yes-probability and carries **no**
+  confidence field.
+- TypeSafe publishes $0.042 per million input tokens with output free, a 32k
+  context on the OpenRouter listing, and 70 to 500 ms latency, which is why ORCA
+  can afford to call it on every safety verdict.
+- Documented retryable statuses are 429 and 529. ORCA does not back off and
+  retry inside a request; it falls through to the emulator so the user is not
+  left waiting.
 
 ## Gaps with no public machine endpoint
 

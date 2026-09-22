@@ -53,8 +53,18 @@ PLACES: tuple[Place, ...] = (
     # --- Karnataka ---
     Place("Karwar", 14.80, 74.09, "Uttara Kannada", "Karnataka", "harbour"),
     Place("Malpe", 13.36, 74.67, "Udupi", "Karnataka", "harbour"),
+    Place("Kaup", 13.22, 74.72, "Udupi", "Karnataka",
+          aliases=("kapu", "kappu", "kaup beach", "kapu beach", "kappu beach")),
+    Place("Udupi", 13.34, 74.70, "Udupi", "Karnataka",
+          aliases=("udipi", "malpe beach")),
+    Place("Bhatkal", 13.97, 74.54, "Uttara Kannada", "Karnataka"),
+    Place("Honnavar", 14.28, 74.42, "Uttara Kannada", "Karnataka"),
+    Place("Kundapura", 13.63, 74.66, "Udupi", "Karnataka",
+          aliases=("kundapur", "gangolli")),
+    Place("Someshwara", 12.78, 74.85, "Dakshina Kannada", "Karnataka",
+          aliases=("someshwar", "ullal")),
     Place("Mangaluru", 12.86, 74.78, "Dakshina Kannada", "Karnataka", "harbour",
-          ("mangalore",)),
+          ("mangalore", "panambur", "tannirbhavi", "surathkal")),
     # --- Kerala ---
     Place("Kasaragod", 12.50, 74.95, "Kasaragod", "Kerala"),
     Place("Kozhikode", 11.25, 75.74, "Kozhikode", "Kerala",
@@ -127,6 +137,45 @@ PLACES: tuple[Place, ...] = (
 
 DEFAULT_PLACE = next(p for p in PLACES if p.name == "Chennai")
 
+#: Native-script names for the places a coastal user is most likely to type in
+#: their own language. `_norm` strips every non-ASCII character, which is right
+#: for "Mangalore" vs "Mangaluru" but silently erases "ರಾಮೇಶ್ವರಂ" to nothing. A
+#: Kannada or Tamil question would therefore resolve to no location at all and
+#: get answered with a clarification request, which is the single most visible
+#: way the multilingual path can fail.
+NATIVE_ALIASES: dict[str, tuple[str, ...]] = {
+    "Rameswaram": (
+        "ರಾಮೇಶ್ವರಂ", "ராமேஸ்வரம்", "రామేశ్వరం", "രാമേശ്വരം", "रामेश्वरम",
+    ),
+    "Chennai": ("ಚೆನ್ನೈ", "சென்னை", "చెన్నై", "ചെന്നൈ", "चेन्नई", "মাদ্রাজ"),
+    "Kochi": ("ಕೊಚ್ಚಿ", "கொச்சி", "కొచ్చి", "കൊച്ചി", "कोच्चि", "ಕೊಚ್ಚಿನ್"),
+    "Mangaluru": ("ಮಂಗಳೂರು", "மங்களூரு", "మంగళూరు", "മംഗളൂരു", "मंगळूरु"),
+    "Malpe": ("ಮಲ್ಪೆ", "மல்பே", "മൽപെ"),
+    "Karwar": ("ಕಾರವಾರ", "கார்வார்", "കാർവാർ"),
+    "Udupi": ("ಉಡುಪಿ", "உடுப்பி", "ഉടുപ്പി"),
+    "Visakhapatnam": (
+        "ವಿಶಾಖಪಟ್ಟಣಂ", "விசாகப்பட்டினம்", "విశాఖపట్నం", "വിശാഖപട്ടണം", "विशाखापत्तनम",
+    ),
+    "Nagapattinam": ("ನಾಗಪಟ್ಟಿಣಂ", "நாகப்பட்டினம்", "నాగపట్నం", "നാഗപട്ടണം"),
+    "Kanyakumari": ("ಕನ್ಯಾಕುಮಾರಿ", "கன்னியாகுமரி", "కన్యాకుమారి", "കന്യാകുമാരി"),
+    "Tuticorin": ("ತೂತುಕುಡಿ", "தூத்துக்குடி", "തൂത്തുക്കുടി"),
+    "Mumbai": ("ಮುಂಬೈ", "மும்பை", "ముంబై", "മുംബൈ", "मुंबई"),
+    "Kozhikode": ("ಕೋಝಿಕ್ಕೋಡ್", "கோழிக்கோடு", "കോഴിക്കോട്", "कोझिकोड"),
+    "Thiruvananthapuram": (
+        "ತಿರುವನಂತಪುರಂ", "திருவனந்தபுரம்", "തിരുവനന്തപുരം", "तिरुवनंतपुरम",
+    ),
+    "Kakinada": ("ಕಾಕಿನಾಡ", "காக்கிநாடா", "కాకినాడ", "കാക്കിനാഡ"),
+    "Paradip": ("ಪರದೀಪ", "பரதீப்", "పరదీప్", "पारादीप"),
+    "Kolkata": ("ಕೋಲ್ಕತ್ತಾ", "கொல்கத்தா", "కోల్‌కతా", "കൊൽക്കത്ത", "कोलकाता", "কলকাতা"),
+    "Veraval": ("ವೇರಾವಳ", "வேராவல்", "વેરાવળ", "वेरावळ"),
+    "Porbandar": ("ಪೋರಬಂದರ್", "போர்பந்தர்", "પોરબંદર", "पोरबंदर"),
+    "Ratnagiri": ("ರತ್ನಗಿರಿ", "ரத்னகிரி", "रत्नागिरी"),
+    "Gulf of Mannar": ("ಮನ್ನಾರ್ ಕೊಲ್ಲಿ", "மன்னார் வளைகுடா", "മന്നാർ ഉൾക്കടൽ"),
+    "Palk Bay": ("ಪಾಕ್ ಜಲಸಂಧಿ", "பாக் வளைகுடா", "പാക് ഉൾക്കടൽ"),
+    "Bay of Bengal": ("ಬಂಗಾಳ ಕೊಲ್ಲಿ", "வங்காள விரிகுடா", "ബംഗാൾ ഉപസാഗരം", "बंगाल की खाड़ी"),
+    "Arabian Sea": ("ಅರಬ್ಬಿ ಸಮುದ್ರ", "அரபிக் கடல்", "അറബിക്കടൽ", "अरब सागर"),
+}
+
 
 def _norm(text: str) -> str:
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
@@ -141,9 +190,31 @@ for _p in PLACES:
 # longest keys first so "chennai port" wins over "chennai"
 _INDEX.sort(key=lambda pair: len(pair[0]), reverse=True)
 
+#: Raw-substring index for native scripts, which must not go through `_norm`.
+_BY_NAME = {p.name: p for p in PLACES}
+_NATIVE_INDEX: list[tuple[str, Place]] = []
+for _name, _natives in NATIVE_ALIASES.items():
+    _place = _BY_NAME.get(_name)
+    if _place is None:  # pragma: no cover - guards a typo in the table above
+        continue
+    for _native in _natives:
+        _NATIVE_INDEX.append((_native, _place))
+_NATIVE_INDEX.sort(key=lambda pair: len(pair[0]), reverse=True)
+
+
+def _find_native(text: str) -> Place | None:
+    """Match a place written in an Indian script, by raw substring."""
+    for key, place in _NATIVE_INDEX:
+        if key in text:
+            return place
+    return None
+
 
 def find_place(text: str) -> Place | None:
-    """Longest-token-match over the gazetteer."""
+    """Longest-token-match over the gazetteer, native scripts included."""
+    native = _find_native(text)
+    if native is not None:
+        return native
     haystack = f" {_norm(text)} "
     for key, place in _INDEX:
         if f" {key} " in haystack:
@@ -153,9 +224,15 @@ def find_place(text: str) -> Place | None:
 
 def find_all_places(text: str) -> list[Place]:
     """All distinct gazetteer hits, in order of appearance (for routes)."""
-    haystack = f" {_norm(text)} "
     hits: list[tuple[int, Place]] = []
     seen: set[str] = set()
+    # native script first, positioned by where they appear in the raw text
+    for key, place in _NATIVE_INDEX:
+        idx = text.find(key)
+        if idx >= 0 and place.name not in seen:
+            seen.add(place.name)
+            hits.append((idx, place))
+    haystack = f" {_norm(text)} "
     for key, place in _INDEX:
         idx = haystack.find(f" {key} ")
         if idx >= 0 and place.name not in seen:
@@ -165,10 +242,125 @@ def find_all_places(text: str) -> list[Place]:
     return [place for _, place in hits]
 
 
+#: Well-known inland places. A marine question about one of these is not a
+#: missing location, it is a misconceived one: there is no sea at Bangalore. The
+#: nearest coast is offered so the user can redirect in one step rather than
+#: being told "I need a location" about a place they clearly named.
+INLAND_PLACES: dict[str, tuple[str, ...]] = {
+    "Bengaluru": ("bangalore", "banglore", "bengaluru", "bangluru", "bangaluru",
+                  "benguluru", "bengluru", "blr"),
+    "Delhi": ("delhi", "new delhi"),
+    "Hyderabad": ("hyderabad", "secunderabad"),
+    "Pune": ("pune", "poona"),
+    "Coimbatore": ("coimbatore", "kovai"),
+    "Madurai": ("madurai",),
+    "Mysuru": ("mysuru", "mysore"),
+    "Nagpur": ("nagpur",),
+    "Jaipur": ("jaipur",),
+    "Lucknow": ("lucknow",),
+    "Bhopal": ("bhopal",),
+    "Indore": ("indore",),
+    "Ahmedabad": ("ahmedabad", "amdavad"),
+    "Tiruchirappalli": ("tiruchirappalli", "trichy"),
+    "Salem": ("salem",),
+    "Hubballi": ("hubballi", "hubli", "dharwad"),
+    "Warangal": ("warangal",),
+    "Vijayawada": ("vijayawada", "bezawada"),
+    "Kanpur": ("kanpur",),
+    "Patna": ("patna",),
+}
+
+#: Nearest coastal gazetteer entry for each inland place, so the reply can offer
+#: a usable alternative instead of a dead end.
+NEAREST_COAST: dict[str, str] = {
+    "Bengaluru": "Mangaluru",
+    "Delhi": "Mumbai",
+    "Hyderabad": "Visakhapatnam",
+    "Pune": "Mumbai",
+    "Coimbatore": "Kochi",
+    "Madurai": "Rameswaram",
+    "Mysuru": "Mangaluru",
+    "Nagpur": "Mumbai",
+    "Jaipur": "Mumbai",
+    "Lucknow": "Kolkata",
+    "Bhopal": "Mumbai",
+    "Indore": "Mumbai",
+    "Ahmedabad": "Veraval",
+    "Tiruchirappalli": "Nagapattinam",
+    "Salem": "Chennai",
+    "Hubballi": "Karwar",
+    "Warangal": "Visakhapatnam",
+    "Vijayawada": "Kakinada",
+    "Kanpur": "Kolkata",
+    "Patna": "Kolkata",
+}
+
 LAT_LON_RE = re.compile(
     r"(-?\d{1,2}(?:\.\d+)?)\s*(?:deg|°)?\s*([NnSs])?\s*[, ]\s*"
     r"(-?\d{1,3}(?:\.\d+)?)\s*(?:deg|°)?\s*([EeWw])?"
 )
+
+#: Words that introduce a place in a fisherman's phrasing, and the words that
+#: end one. Used to tell "the user named a place I do not know" apart from "the
+#: user named no place at all". Those two cases need opposite handling: the
+#: first must never silently inherit an earlier location.
+_PLACE_LEAD = re.compile(
+    r"\b(?:near|off|at|around|close to|outside|beside|by|in|into|from|to)\s+"
+    r"(?P<name>[^,.?!;]{2,40})",
+    re.IGNORECASE,
+)
+_STOP_WORDS = {
+    "the", "sea", "coast", "shore", "water", "waters", "beach", "harbour",
+    "harbor", "port", "jetty", "me", "us", "my", "our", "here", "there", "home",
+    "today", "tomorrow", "tonight", "now", "morning", "evening", "night",
+    "place", "position", "location", "area", "region", "side", "village",
+    "town", "city", "district", "landing", "centre", "center", "point",
+}
+
+
+def find_inland(text: str) -> tuple[str, str] | None:
+    """(inland place, nearest coastal place) if the text names an inland city.
+
+    Checked before the "unknown place" path, because "there is no sea at
+    Bengaluru" is a far more useful answer than "I do not know Bengaluru".
+    """
+    haystack = f" {_norm(text)} "
+    best: tuple[int, str] | None = None
+    for canonical, aliases in INLAND_PLACES.items():
+        for alias in aliases:
+            if f" {_norm(alias)} " in haystack:
+                if best is None or len(alias) > best[0]:
+                    best = (len(alias), canonical)
+    if best is None:
+        return None
+    name = best[1]
+    return name, NEAREST_COAST.get(name, "Chennai")
+
+
+def unresolved_place(message: str) -> str | None:
+    """A place the user named that the gazetteer does not know, if any.
+
+    Returns None when either every named place resolved, or no place was named
+    at all. Only a genuine miss comes back, because that is the one case where
+    answering about somewhere else would be dangerous.
+    """
+    for match in _PLACE_LEAD.finditer(message):
+        phrase = match.group("name").strip()
+        if not phrase:
+            continue
+        # drop trailing time words: "near kappu beach tomorrow morning"
+        words = [w for w in re.split(r"\s+", phrase) if w]
+        kept: list[str] = []
+        for word in words:
+            if _norm(word).strip() in _STOP_WORDS:
+                continue
+            kept.append(word)
+        candidate = " ".join(kept).strip()
+        if not candidate or len(_norm(candidate).strip()) < 3:
+            continue
+        if find_place(candidate) is None and find_place(phrase) is None:
+            return candidate
+    return None
 
 
 def parse_coords(text: str) -> tuple[float, float] | None:

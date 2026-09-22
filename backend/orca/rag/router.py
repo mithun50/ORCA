@@ -190,6 +190,18 @@ TIME_HINTS: tuple[tuple[str, str, int, int], ...] = (
     (r"\bthis week\b|\bcoming week\b", "this week", 0, 120),
     (r"\bnow\b|\bright now\b|\bcurrently\b", "now", 0, 6),
     (r"\btoday\b", "today", 0, 24),
+    # Native-script time words. Without these a question asked in Kannada or
+    # Tamil silently answers for "now" instead of tomorrow morning, which is a
+    # wrong answer rather than a missing one.
+    (r"ನಾಳೆ\s*ಬೆಳಿಗ್ಗೆ|நாளை\s*காலை|రేపు\s*ఉదయం|നാളെ\s*രാവിലെ|कल\s*सुबह",
+     "tomorrow morning", 24, 8),
+    (r"ನಾಳೆ\s*ಸಂಜೆ|நாளை\s*மாலை|రేపు\s*సాయంత్రం|നാളെ\s*വൈകുന്നേരം|कल\s*शाम",
+     "tomorrow evening", 36, 8),
+    (r"ನಾಳೆ|நாளை|రేపు|നാളെ|कल|আগামীকাল", "tomorrow", 24, 24),
+    (r"ಇಂದು\s*ರಾತ್ರಿ|இன்று\s*இரவு|ఈ\s*రాత్రి|ഇന്ന്\s*രാത്രി|आज\s*रात", "tonight", 6, 12),
+    (r"ಇಂದು|இன்று|ఈరోజు|ഇന്ന്|आज|আজ", "today", 0, 24),
+    (r"ಈಗ|இப்போது|ఇప్పుడు|ഇപ്പോൾ|अभी", "now", 0, 6),
+    (r"ಈ\s*ವಾರ|இந்த\s*வாரம்|ఈ\s*వారం|ഈ\s*ആഴ്ച|इस\s*हफ़्ते", "this week", 0, 120),
 )
 
 LANG_HINTS = {

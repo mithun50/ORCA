@@ -27,6 +27,7 @@ build/
 # Editors and OS
 .vscode/
 .idea/
+.kiro/
 .DS_Store
 Thumbs.db
 *.swp

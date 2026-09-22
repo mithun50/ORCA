@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Iterator, Protocol
 
 from ..schemas import (
     ChartSeries,
+    Citation,
     Evidence,
     Intent,
     Location,
@@ -30,6 +31,8 @@ from ..schemas import (
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..services import Services
+    from ..rag.audience import AudienceCall
+    from .synthesis import Citer
 
 log = logging.getLogger("orca.agents")
 
@@ -155,6 +158,24 @@ class AgentContext:
     followups: list[str] = field(default_factory=list)
     language_hint: str = "en"
     history: list[dict[str, str]] = field(default_factory=list)
+    #: who the answer is being written for, decided by the planner
+    audience: "AudienceCall | None" = None
+    #: numbered inline citations, populated by the synthesis agent
+    citations: list[Citation] = field(default_factory=list)
+    _citer: "Citer | None" = field(default=None, repr=False, compare=False)
+
+    @property
+    def citer(self) -> "Citer":
+        """Lazily created so every draft builder shares one numbering run."""
+        if self._citer is None:
+            from .synthesis import Citer
+
+            self._citer = Citer(self.evidence)
+        return self._citer
+
+    def reset_citer(self) -> None:
+        """Start numbering again. Called before each draft attempt."""
+        self._citer = None
 
     @property
     def intent(self) -> Intent:

@@ -117,6 +117,22 @@ class GeoRag:
 
     # ------------------------------------------------------------ retrieval #
 
+    async def distance_to_sea_km(self, lat: float, lon: float) -> float | None:
+        """How far this point is from Indian waters, 0.0 if already in them.
+
+        Measured against the India EEZ polygon we already fetch from Marine
+        Regions, so "is this place coastal?" is answered by geometry rather than
+        by a hand-maintained list of city names. Returns None only when the EEZ
+        could not be loaded, so callers can tell "inland" from "cannot tell".
+        """
+        eez = await self.ensure_eez()
+        if eez is None:
+            return None
+        point = Point(lon, lat)
+        if eez.contains(point):
+            return 0.0
+        return round(geodesic_distance_km(lat, lon, eez), 1)
+
     def zones_near(
         self, lat: float, lon: float, radius_km: float = 60.0
     ) -> list[ZoneHit]:
