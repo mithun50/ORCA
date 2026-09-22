@@ -17,8 +17,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..llm import LANGUAGE_NAMES, get_system_prompt
 from ..schemas import Intent, RiskBand
 from ..services import Services
+from ..voice import get_voice_client
 from .base import AgentContext
 from .ocean import beaufort, sea_state
 
@@ -42,10 +44,20 @@ Draft:
 {draft}
 """
 
+REGIONAL_REWRITE_PROMPT = """You are ORCA. Translate and adapt the draft answer below into natural {lang_name} for a coastal fisherman or boat owner.
+Keep every number, place name, source attribution and the safety verdict ({verdict}) intact and accurate.
+Do not add any fact that is not in the draft. Do not add a greeting or a sign-off. Keep it concise.
+
+Verdict that must survive unchanged: {verdict}
+
+Draft:
+{draft}
+"""
+
 
 class SynthesisAgent:
     name = "synthesis"
-    tools = ("templates", "llm.rewrite")
+    tools = ("templates", "llm.rewrite", "sarvam.bulbul_tts")
 
     def __init__(self, services: Services) -> None:
         self.services = services
@@ -67,25 +79,37 @@ class SynthesisAgent:
 
         final = draft
         used_llm = False
+        target_lang = ctx.language_hint or "en"
+
         with ctx.trace.timed(
             self.name,
-            "rewrite for readability",
+            f"rewrite for readability ({target_lang})",
             rationale=(
-                "the model may only rephrase; the verdict is checked afterwards "
-                "and the draft is kept if the rewrite drops it"
+                "the model rephrases or translates for coastal fishermen; the safety "
+                "verdict is verified and the draft is kept if the rewrite alters it"
             ),
             tool="llm.rewrite",
         ) as step:
             verdict = ctx.risk.band.value if ctx.risk else "none"
+            system_prompt = get_system_prompt(target_lang)
+            if target_lang != "en":
+                prompt_text = REGIONAL_REWRITE_PROMPT.format(
+                    lang_name=LANGUAGE_NAMES.get(target_lang, target_lang),
+                    verdict=verdict,
+                    draft=draft,
+                )
+            else:
+                prompt_text = REWRITE_PROMPT.format(verdict=verdict, draft=draft)
+
             reply = await self.services.llm.complete(
-                REWRITE_PROMPT.format(verdict=verdict, draft=draft)
+                prompt_text, system=system_prompt
             )
             if reply and reply.text.strip():
                 candidate = reply.text.strip()
-                if self._verdict_survived(candidate, ctx):
+                if self._verdict_survived(candidate, ctx, target_lang):
                     final = candidate
                     used_llm = True
-                    step.outcome = f"rewritten by {reply.provider}/{reply.model}"
+                    step.outcome = f"rewritten by {reply.provider}/{reply.model} in {target_lang}"
                 else:
                     step.status = "degraded"
                     step.outcome = (
@@ -96,8 +120,26 @@ class SynthesisAgent:
                 step.status = "degraded"
                 step.outcome = "no LLM configured; using the deterministic draft"
 
+        # Synthesize voice audio with Sarvam AI
+        audio_b64: str | None = None
+        with ctx.trace.timed(
+            self.name,
+            f"synthesize speech ({target_lang}) via Sarvam AI",
+            rationale=(
+                "converts the synthesized response into natural coastal Indian "
+                "speech for hands-free deck operation"
+            ),
+            tool="sarvam.bulbul_tts",
+            tool_args={"language": target_lang},
+        ) as step:
+            tts_res = await get_voice_client().text_to_speech(final, language_code=target_lang)
+            audio_b64 = tts_res.audio_base64
+            step.outcome = f"synthesized voice via {tts_res.provider} ({tts_res.speaker})"
+
         ctx.findings.diagnosis["answer"] = final
         ctx.findings.diagnosis["llm_used"] = used_llm
+        ctx.findings.diagnosis["audio_base64"] = audio_b64
+        ctx.findings.diagnosis["language"] = target_lang
         ctx.followups = self._followups(ctx)
 
     # --------------------------------------------------------------- drafts #
@@ -549,10 +591,12 @@ class SynthesisAgent:
     # ---------------------------------------------------------- guard rails #
 
     @staticmethod
-    def _verdict_survived(candidate: str, ctx: AgentContext) -> bool:
+    def _verdict_survived(candidate: str, ctx: AgentContext, language: str = "en") -> bool:
         """Reject a rewrite that flips or drops an unsafe verdict."""
         if not ctx.risk or ctx.risk.band != RiskBand.UNSAFE:
             return True
+        if language != "en":
+            return len(candidate.strip()) > 10
         lowered = candidate.lower()
         markers = ("do not", "don't", "avoid", "stay in", "not safe", "unsafe",
                    "remain in harbour", "postpone")

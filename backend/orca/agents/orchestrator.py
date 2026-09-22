@@ -126,7 +126,11 @@ class Orchestrator:
             location=plan.location,
             destination=plan.destination,
             window=plan.window,
-            language_hint=router.detect_language_hint(request.message),
+            language_hint=(
+                request.language
+                if request.language and request.language != "en"
+                else router.detect_language_hint(request.message)
+            ),
             history=self.services.history(request.session_id),
         )
         if plan.location:
@@ -204,4 +208,6 @@ class Orchestrator:
             followups=ctx.followups,
             degraded_sources=self.services.registry.degraded(),
             llm_used=bool(ctx.findings.diagnosis.get("llm_used")),
+            language=ctx.findings.diagnosis.get("language") or ctx.language_hint or "en",
+            audio_base64=ctx.findings.diagnosis.get("audio_base64"),
         )

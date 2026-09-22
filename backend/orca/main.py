@@ -25,8 +25,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+import base64
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -34,10 +35,12 @@ from pydantic import BaseModel, Field
 from .agents.base import AgentContext, EvidenceBook, Findings, Trace
 from .agents.orchestrator import Orchestrator
 from .config import get_settings
+from .jev import get_jev_engine
 from .rag import router as intent_router
 from .rag.router import KnowledgeDomain
 from .schemas import ChatRequest, ChatResponse
 from .services import get_services
+from .voice import get_voice_client
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,6 +59,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.warm_up = await services.warm_up()
     yield
     await services.shutdown()
+
+
+def get_orchestrator() -> Orchestrator:
+    if not hasattr(app.state, "orchestrator") or app.state.orchestrator is None:
+        services = get_services()
+        app.state.services = services
+        app.state.orchestrator = Orchestrator(services)
+    return app.state.orchestrator
 
 
 app = FastAPI(
@@ -84,9 +95,13 @@ app.add_middleware(
 @app.get("/health")
 async def health() -> dict[str, Any]:
     services = get_services()
+    llm_provider = await services.llm.provider()
     return {
         "status": "ok",
         "warm_up": getattr(app.state, "warm_up", {}),
+        "llm_provider": llm_provider,
+        "jev_configured": get_jev_engine().is_configured,
+        "sarvam_voice_configured": get_voice_client().is_configured,
         **services.health(),
     }
 
@@ -185,7 +200,7 @@ async def chat(request: ChatRequest, via: str = "") -> ChatResponse:
     if not request.message.strip():
         raise HTTPException(status_code=422, detail="message must not be empty")
 
-    orchestrator: Orchestrator = app.state.orchestrator
+    orchestrator: Orchestrator = get_orchestrator()
 
     if via.lower() == "n8n":
         routed = await _route_via_n8n(request)
@@ -232,6 +247,108 @@ async def _route_via_n8n(request: ChatRequest) -> ChatResponse | None:
 
 
 # --------------------------------------------------------------------------- #
+# multimodal voice: Sarvam AI STT & TTS
+# --------------------------------------------------------------------------- #
+
+class TtsApiRequest(BaseModel):
+    text: str
+    language: str = "en"
+    speaker: str | None = None
+
+
+class SttApiResponse(BaseModel):
+    transcript: str
+    language_code: str
+    detected_locale: str
+    confidence: float
+    provider: str
+
+
+@app.post("/api/voice/stt", response_model=SttApiResponse)
+async def api_voice_stt(
+    file: UploadFile | None = None,
+    audio_base64: str = Form(default=""),
+    language: str = Form(default="unknown"),
+) -> SttApiResponse:
+    """Transcribes deck audio using Sarvam Saaras with diesel acoustic filtering."""
+    voice_client = get_voice_client()
+    if file is not None:
+        audio_bytes = await file.read()
+    elif audio_base64:
+        try:
+            audio_bytes = base64.b64decode(audio_base64)
+        except Exception:
+            raise HTTPException(status_code=422, detail="invalid base64 audio") from None
+    else:
+        raise HTTPException(status_code=422, detail="either audio file or audio_base64 is required")
+
+    res = await voice_client.speech_to_text(audio_bytes, language_code=language)
+    return SttApiResponse(
+        transcript=res.transcript,
+        language_code=res.language_code,
+        detected_locale=res.detected_locale,
+        confidence=res.confidence,
+        provider=res.provider,
+    )
+
+
+@app.post("/api/voice/tts")
+async def api_voice_tts(request: TtsApiRequest) -> dict[str, Any]:
+    """Synthesizes coastal vernacular speech using Sarvam Bulbul."""
+    voice_client = get_voice_client()
+    res = await voice_client.text_to_speech(
+        request.text, language_code=request.language, speaker=request.speaker
+    )
+    return {
+        "audio_base64": res.audio_base64,
+        "format": res.audio_format,
+        "language": res.target_language,
+        "speaker": res.speaker,
+        "provider": res.provider,
+    }
+
+
+@app.post("/chat/voice", response_model=ChatResponse)
+async def chat_voice(
+    file: UploadFile | None = None,
+    audio_base64: str = Form(default=""),
+    language: str = Form(default="unknown"),
+    session_id: str = Form(default="default"),
+    lat: float | None = Form(default=None),
+    lon: float | None = Form(default=None),
+    place: str | None = Form(default=None),
+) -> ChatResponse:
+    """End-to-end hands-free voice query: Sarvam STT -> ORCA reasoning -> Sarvam TTS."""
+    voice_client = get_voice_client()
+    if file is not None:
+        audio_bytes = await file.read()
+    elif audio_base64:
+        try:
+            audio_bytes = base64.b64decode(audio_base64)
+        except Exception:
+            raise HTTPException(status_code=422, detail="invalid base64 audio") from None
+    else:
+        raise HTTPException(status_code=422, detail="either audio file or audio_base64 is required")
+
+    stt_res = await voice_client.speech_to_text(audio_bytes, language_code=language)
+    transcript = stt_res.transcript.strip()
+    if not transcript:
+        raise HTTPException(status_code=422, detail="could not transcribe voice input")
+
+    orchestrator: Orchestrator = get_orchestrator()
+    chat_req = ChatRequest(
+        message=transcript,
+        session_id=session_id,
+        lat=lat,
+        lon=lon,
+        place=place,
+        language=stt_res.detected_locale,
+    )
+    response = await orchestrator.handle(chat_req)
+    return response
+
+
+# --------------------------------------------------------------------------- #
 # staged endpoints for the n8n router workflow
 # --------------------------------------------------------------------------- #
 
@@ -268,7 +385,7 @@ async def internal_classify(request: ClassifyRequest) -> ClassifyResponse:
 
     The `domains` array is what the n8n Switch node branches on.
     """
-    orchestrator: Orchestrator = app.state.orchestrator
+    orchestrator: Orchestrator = get_orchestrator()
     trace = Trace()
     chat_request = ChatRequest(**request.model_dump())
     ctx = await orchestrator.build_context(chat_request, trace)
@@ -347,7 +464,7 @@ async def internal_retrieve(domain: str, request: RetrieveRequest) -> RetrieveRe
         ) from None
 
     agent_name = intent_router.DOMAIN_AGENT[knowledge_domain]
-    orchestrator: Orchestrator = app.state.orchestrator
+    orchestrator: Orchestrator = get_orchestrator()
     trace = Trace()
     ctx = await orchestrator.build_context(
         ChatRequest(
@@ -404,7 +521,7 @@ async def internal_synthesize(request: SynthesizeRequest) -> ChatResponse:
     """
     from .schemas import Evidence, TraceStep
 
-    orchestrator: Orchestrator = app.state.orchestrator
+    orchestrator: Orchestrator = get_orchestrator()
     trace = Trace()
     ctx = await orchestrator.build_context(
         ChatRequest(
@@ -484,6 +601,8 @@ async def internal_synthesize(request: SynthesizeRequest) -> ChatResponse:
         followups=ctx.followups,
         degraded_sources=services.registry.degraded(),
         llm_used=bool(ctx.findings.diagnosis.get("llm_used")),
+        language=ctx.findings.diagnosis.get("language") or ctx.language_hint or "en",
+        audio_base64=ctx.findings.diagnosis.get("audio_base64"),
     )
 
 
