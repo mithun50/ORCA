@@ -8,6 +8,7 @@ their settings are absent rather than raising.
 from __future__ import annotations
 
 from functools import lru_cache
+import os
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -54,13 +55,30 @@ class Settings(BaseSettings):
     cache_dir: str = str(REPO_ROOT / ".cache")
 
     # --- LLM (all optional) ---
-    llm_provider: str = "auto"  # auto | ollama | openai | gemini | none
+    # auto | openrouter | gemini | openai | ollama | none
+    llm_provider: str = "auto"
     llm_model: str = "llama3.1:8b"
     ollama_base: str = "http://localhost:11434"
     openai_api_key: str = ""
     openai_base: str = "https://api.openai.com/v1"
     gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
+    openrouter_api_key: str = ""
+    openrouter_base: str = "https://openrouter.ai/api/v1"
+    openrouter_model: str = "anthropic/claude-3.5-sonnet"
     llm_timeout_s: float = 60.0
+
+    # --- Jev / TypeSafe AI Decision Engine (optional) ---
+    jev_api_key: str = ""
+    jev_base: str = "https://api.typesafe.ai/v1"
+    jev_model: str = "jev-latest"
+
+    # --- Sarvam AI Voice Engine: STT & TTS (optional) ---
+    sarvam_api_key: str = ""
+    sarvam_base: str = "https://api.sarvam.ai"
+    sarvam_stt_model: str = "saaras:v3"
+    sarvam_tts_model: str = "bulbul:v1"
+    sarvam_speaker: str = "meera"
 
     # --- retrieval ---
     qdrant_url: str = ""
@@ -84,6 +102,22 @@ class Settings(BaseSettings):
     @property
     def cors_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def effective_gemini_api_key(self) -> str:
+        return self.gemini_api_key or os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")
+
+    @property
+    def effective_openrouter_api_key(self) -> str:
+        return self.openrouter_api_key or os.environ.get("OPENROUTER_API_KEY", "")
+
+    @property
+    def effective_sarvam_api_key(self) -> str:
+        return self.sarvam_api_key or os.environ.get("SARVAM_API_KEY", "")
+
+    @property
+    def effective_jev_api_key(self) -> str:
+        return self.jev_api_key or os.environ.get("JEV_API_KEY", "") or os.environ.get("TYPESAFE_API_KEY", "")
 
 
 @lru_cache

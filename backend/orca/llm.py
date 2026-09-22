@@ -42,6 +42,39 @@ Hard rules:
 - Never use em dashes or en dashes. Use a plain hyphen.
 """
 
+LANGUAGE_NAMES: dict[str, str] = {
+    "en": "English",
+    "kn": "Kannada (ಕನ್ನಡ)",
+    "ta": "Tamil (தமிழ்)",
+    "te": "Telugu (తెలుగు)",
+    "ml": "Malayalam (മലയാളം)",
+    "hi": "Hindi (हिन्दी)",
+    "mr": "Marathi (मराठी)",
+    "gu": "Gujarati (ગુજરાતી)",
+    "bn": "Bengali (বাংলা)",
+}
+
+
+def get_system_prompt(language: str = "en") -> str:
+    lang_name = LANGUAGE_NAMES.get(language, "English")
+    if language == "en":
+        return SYSTEM_PROMPT
+    return f"""You are ORCA, a marine information assistant for Indian coastal
+users: fishermen, coastal authorities and maritime operators.
+
+Hard rules:
+- Use ONLY the evidence supplied in the prompt. Never invent a number, a place, a
+  dataset name or an advisory.
+- If the evidence is missing or stale, say so plainly.
+- Keep the safety verdict exactly as given. Do not soften or escalate it.
+- Name the source agency when you state a number (ISRO/MOSDAC, INCOIS, IMD, or
+  "fallback model" for the non-official tier).
+- Reply in {lang_name} naturally and respectfully so a local coastal fisherman or boat owner easily understands. Short paragraphs or a few bullets. No preamble, no headings.
+- Keep maritime technical terms clear and transliterated or translated accurately.
+- Speak plainly, as to a boat owner, not an oceanographer.
+- Never use em dashes or en dashes. Use a plain hyphen.
+"""
+
 
 @dataclass
 class LlmReply:
@@ -66,16 +99,22 @@ class LlmClient:
         if configured == "none":
             self._provider = "none"
             return self._provider
+        if configured in ("ggl", "gemini"):
+            self._provider = "gemini"
+            return self._provider
         if configured != "auto":
             self._provider = configured
             return self._provider
 
-        if await self._ollama_alive():
-            self._provider = "ollama"
+        # Auto-discovery priority: OpenRouter -> Gemini -> OpenAI -> Ollama
+        if self.settings.effective_openrouter_api_key:
+            self._provider = "openrouter"
+        elif self.settings.effective_gemini_api_key:
+            self._provider = "gemini"
         elif self.settings.openai_api_key:
             self._provider = "openai"
-        elif self.settings.gemini_api_key:
-            self._provider = "gemini"
+        elif await self._ollama_alive():
+            self._provider = "ollama"
         else:
             self._provider = "none"
         log.info("LLM provider resolved to %s", self._provider)
@@ -105,12 +144,14 @@ class LlmClient:
     ) -> LlmReply | None:
         provider = await self.provider()
         try:
-            if provider == "ollama":
-                return await self._ollama(prompt, system, temperature, max_tokens)
-            if provider == "openai":
-                return await self._openai(prompt, system, temperature, max_tokens)
+            if provider == "openrouter":
+                return await self._openrouter(prompt, system, temperature, max_tokens)
             if provider == "gemini":
                 return await self._gemini(prompt, system, temperature, max_tokens)
+            if provider == "openai":
+                return await self._openai(prompt, system, temperature, max_tokens)
+            if provider == "ollama":
+                return await self._ollama(prompt, system, temperature, max_tokens)
         except (httpx.HTTPError, ValueError, KeyError) as exc:
             log.warning("LLM call failed (%s): %s", provider, exc)
             return None
@@ -137,6 +178,42 @@ class LlmClient:
             return None
 
     # ------------------------------------------------------------ providers #
+
+    async def _openrouter(
+        self, prompt: str, system: str, temperature: float, max_tokens: int
+    ) -> LlmReply | None:
+        key = self.settings.effective_openrouter_api_key
+        if not key:
+            return None
+        model = self.settings.openrouter_model or "anthropic/claude-3.5-sonnet"
+        async with httpx.AsyncClient(timeout=self.settings.llm_timeout_s) as client:
+            resp = await client.post(
+                f"{self.settings.openrouter_base}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "HTTP-Referer": "https://github.com/mithun50/ORCA",
+                    "X-Title": "ORCA Marine Intelligence",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                },
+            )
+            if resp.status_code != 200:
+                log.warning("openrouter returned %s: %s", resp.status_code, resp.text[:200])
+                return None
+            body = resp.json()
+            choices = body.get("choices", [])
+            if not choices:
+                return None
+            text = choices[0].get("message", {}).get("content", "").strip()
+            return LlmReply(text, "openrouter", body.get("model", model)) if text else None
 
     async def _ollama(
         self, prompt: str, system: str, temperature: float, max_tokens: int
@@ -190,7 +267,12 @@ class LlmClient:
     async def _gemini(
         self, prompt: str, system: str, temperature: float, max_tokens: int
     ) -> LlmReply | None:
-        model = self.settings.llm_model or "gemini-2.0-flash"
+        key = self.settings.effective_gemini_api_key
+        if not key:
+            return None
+        model = self.settings.gemini_model or "gemini-2.5-flash"
+        if not model.startswith("gemini-"):
+            model = "gemini-2.5-flash"
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent"
@@ -198,7 +280,7 @@ class LlmClient:
         async with httpx.AsyncClient(timeout=self.settings.llm_timeout_s) as client:
             resp = await client.post(
                 url,
-                params={"key": self.settings.gemini_api_key},
+                params={"key": key},
                 json={
                     "systemInstruction": {"parts": [{"text": system}]},
                     "contents": [{"parts": [{"text": prompt}]}],
@@ -209,10 +291,13 @@ class LlmClient:
                 },
             )
             if resp.status_code != 200:
-                log.warning("gemini returned %s", resp.status_code)
+                log.warning("gemini returned %s: %s", resp.status_code, resp.text[:200])
                 return None
             body = resp.json()
-            parts = body["candidates"][0]["content"]["parts"]
+            candidates = body.get("candidates", [])
+            if not candidates:
+                return None
+            parts = candidates[0].get("content", {}).get("parts", [])
             text = "".join(p.get("text", "") for p in parts).strip()
             return LlmReply(text, "gemini", model) if text else None
 

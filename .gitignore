@@ -31,5 +31,9 @@ build/
 Thumbs.db
 *.swp
 
-# Logs
+# Logs and temporary files
 *.log
+*.pdf
+*.wav
+*.mp3
+audio/

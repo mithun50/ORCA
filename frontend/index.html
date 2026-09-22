@@ -98,6 +98,13 @@
   .step .why { color: var(--muted); font-size: 11.5px; font-style: italic; }
   .step .out { color: var(--text); font-size: 11.5px; }
   .empty { color: var(--muted); font-size: 12.5px; padding: 14px; text-align: center; }
+  .btn-icon { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 9px; padding: 10px 14px; cursor: pointer; font-size: 15px; display: flex; align-items: center; justify-content: center; }
+  .btn-icon:hover { border-color: var(--accent); }
+  .btn-icon.recording { background: #5c1818; border-color: #f87171; animation: recPulse 1s infinite alternate; }
+  @keyframes recPulse { from { opacity: 1; } to { opacity: 0.5; } }
+  .play-audio-btn { margin-top: 8px; display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 11.5px; border-radius: 12px; background: #16364d; color: var(--accent); border: 1px solid var(--accent); cursor: pointer; }
+  .play-audio-btn:hover { background: #1f4766; }
+  .select-lang { padding: 9px 12px; border-radius: 9px; border: 1px solid var(--line); background: #0d1a27; color: var(--text); font-size: 13px; }
   .spin { display: inline-block; width: 11px; height: 11px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: s .8s linear infinite; }
   @keyframes s { to { transform: rotate(360deg); } }
 </style>
@@ -119,8 +126,17 @@
     <div class="samples" id="samples"></div>
     <div class="messages" id="messages"></div>
     <form id="form">
+      <select id="langSelect" class="select-lang" title="Select Response Language">
+        <option value="en">English</option>
+        <option value="kn">ಕನ್ನಡ (Kannada)</option>
+        <option value="ta">தமிழ் (Tamil)</option>
+        <option value="te">తెలుగు (Telugu)</option>
+        <option value="ml">മലയാളം (Malayalam)</option>
+        <option value="hi">हिन्दी (Hindi)</option>
+      </select>
       <input type="text" id="input" autocomplete="off"
              placeholder="Is it safe to venture out off Rameswaram tomorrow morning?" />
+      <button type="button" class="btn-icon" id="micBtn" title="Hold/Click to Speak (Sarvam AI STT)">🎤</button>
       <button class="send" id="send" type="submit">Ask</button>
     </form>
   </section>
@@ -269,6 +285,16 @@ function addMessage(text, cls, extras) {
   div.className = 'msg ' + cls;
   if (extras && extras.meta) div.innerHTML = extras.meta;
   div.appendChild(document.createTextNode(text));
+  if (extras && extras.audio_base64) {
+    const audioBtn = document.createElement('button');
+    audioBtn.className = 'play-audio-btn';
+    audioBtn.innerHTML = '🔊 Play Coastal Voice (Sarvam Bulbul)';
+    audioBtn.onclick = () => {
+      const snd = new Audio('data:audio/wav;base64,' + extras.audio_base64);
+      snd.play();
+    };
+    div.appendChild(audioBtn);
+  }
   if (extras && extras.followups && extras.followups.length) {
     const wrap = document.createElement('div');
     wrap.className = 'followups';
@@ -292,6 +318,12 @@ function metaHtml(data) {
     `<span class="chip">confidence ${(data.confidence * 100).toFixed(0)}%</span>`,
   ];
   if (data.risk) chips.push(`<span class="band ${band}">${band}</span>`);
+  if (data.risk && data.risk.jev_decision) {
+    const j = data.risk.jev_decision;
+    chips.push(`<span class="chip" style="border-color:#38bdf8;color:#38bdf8">Jev: ${escape(j.action)} (${j.risk_score}/100)</span>`);
+  }
+  if (data.language) chips.push(`<span class="chip" style="border-color:#a78bfa;color:#a78bfa">${escape(data.language.toUpperCase())}</span>`);
+  if (data.audio_base64) chips.push('<span class="chip" style="border-color:#2dd4bf;color:#2dd4bf">Sarvam Voice</span>');
   if (data.location) chips.push(`<span class="chip">${escape(data.location.name)}</span>`);
   if (data.window) chips.push(`<span class="chip">${escape(data.window.label)}</span>`);
   chips.push(`<span class="chip">${(data.evidence || []).length} evidence</span>`);
@@ -309,15 +341,16 @@ async function ask(question) {
   try {
     const viaN8n = $('useN8n').checked;
     const url = viaN8n ? `${API}/chat?via=n8n` : `${API}/chat`;
+    const selectedLang = $('langSelect').value;
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: question, session_id: SESSION })
+      body: JSON.stringify({ message: question, session_id: SESSION, language: selectedLang })
     });
     if (!res.ok) throw new Error(`API returned ${res.status}: ${(await res.text()).slice(0, 200)}`);
     const data = await res.json();
     pending.remove();
-    addMessage(data.answer, 'bot', { meta: metaHtml(data), followups: data.followups });
+    addMessage(data.answer, 'bot', { meta: metaHtml(data), followups: data.followups, audio_base64: data.audio_base64 });
     renderEvidence(data); renderTrace(data); renderMap(data);
     if ((data.degraded_sources || []).length) {
       addMessage('Sources that degraded on this request: ' + data.degraded_sources.join(', '), 'bot');
@@ -335,11 +368,71 @@ async function checkHealth() {
   try {
     const h = await (await fetch(`${API}/health`)).json();
     $('dot').className = 'dot up';
+    const llmName = h.llm_provider || h.llm;
+    const jevStatus = h.jev_configured ? 'Jev (cloud)' : 'Jev (emulator)';
+    const sarvamStatus = h.sarvam_voice_configured ? 'Sarvam AI' : 'Voice (offline)';
     $('statusText').textContent =
-      `${h.vector_rag.chunks} docs, ${h.geo_rag.zone_features} zones, LLM ${h.llm}`;
+      `${h.vector_rag.chunks} docs, ${h.geo_rag.zone_features} zones | LLM: ${llmName} | ${jevStatus} | ${sarvamStatus}`;
   } catch {
     $('dot').className = 'dot down';
     $('statusText').textContent = 'API unreachable';
+  }
+}
+
+// Microphone voice input with Sarvam AI STT & TTS
+let mediaRecorder = null;
+let audioChunks = [];
+const micBtn = $('micBtn');
+
+micBtn.onclick = async () => {
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();
+    micBtn.classList.remove('recording');
+    micBtn.textContent = '🎤';
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioChunks = [];
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+    mediaRecorder.onstop = async () => {
+      const blob = new Blob(audioChunks, { type: 'audio/wav' });
+      stream.getTracks().forEach(t => t.stop());
+      await sendVoice(blob);
+    };
+    mediaRecorder.start();
+    micBtn.classList.add('recording');
+    micBtn.textContent = '⏹️';
+  } catch (err) {
+    alert('Microphone recording error: ' + err.message);
+  }
+};
+
+async function sendVoice(blob) {
+  const pending = addMessage('processing voice audio...', 'bot');
+  pending.innerHTML = '<span class="spin"></span> filtering diesel engine noise & running Sarvam Saaras STT...';
+  try {
+    const formData = new FormData();
+    formData.append('file', blob, 'deck_audio.wav');
+    formData.append('language', $('langSelect').value);
+    formData.append('session_id', SESSION);
+
+    const res = await fetch(`${API}/chat/voice`, {
+      method: 'POST',
+      body: formData
+    });
+    if (!res.ok) throw new Error(`Voice chat returned ${res.status}: ${(await res.text()).slice(0, 150)}`);
+    const data = await res.json();
+    pending.remove();
+    addMessage(data.answer, 'bot', { meta: metaHtml(data), followups: data.followups, audio_base64: data.audio_base64 });
+    renderEvidence(data); renderTrace(data); renderMap(data);
+    if (data.audio_base64) {
+      new Audio('data:audio/wav;base64,' + data.audio_base64).play();
+    }
+  } catch (err) {
+    pending.remove();
+    addMessage('Voice query failed: ' + err.message, 'err');
   }
 }
 

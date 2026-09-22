@@ -16,6 +16,7 @@ import asyncio
 from typing import Any
 
 from ..geo.geometry import bearing_deg, compass
+from ..jev import JevSafetyDecision, get_jev_engine
 from ..schemas import Evidence, MapMarker, RiskAssessment, RiskBand, RiskFinding
 from ..services import Services
 from .base import AgentContext
@@ -30,14 +31,19 @@ BAND_ORDER = {
 
 class RiskAssessmentAgent:
     name = "risk-assessment"
-    tools = ("gdacs.nearest_cyclone", "imd.fishermen_warnings", "threshold-rules")
+    tools = (
+        "gdacs.nearest_cyclone",
+        "imd.fishermen_warnings",
+        "threshold-rules",
+        "jev.system_one",
+    )
 
     def __init__(self, services: Services) -> None:
         self.services = services
 
     async def run(self, ctx: AgentContext) -> None:
         await self._retrieve_hazards(ctx)
-        self._assess(ctx)
+        await self._assess(ctx)
 
     # ------------------------------------------------------------- retrieval #
 
@@ -111,7 +117,7 @@ class RiskAssessmentAgent:
 
     # ------------------------------------------------------------ assessment #
 
-    def _assess(self, ctx: AgentContext) -> None:
+    async def _assess(self, ctx: AgentContext) -> None:
         settings = self.services.settings
         with ctx.trace.timed(
             self.name,
@@ -348,6 +354,63 @@ class RiskAssessmentAgent:
                     )
                 )
 
+            # TypeSafe AI Jev System-One Decision Integration
+            swh_val = waves.get("swh_peak_m") or waves.get("swh_now_m")
+            wind_val = weather.get("wind_peak_kt") or weather.get("wind_now_kt")
+            gust_val = weather.get("gust_peak_kt")
+            cyclone_present = bool(hazards.get("cyclone"))
+            cyclone_distance = (hazards.get("cyclone") or {}).get("distance_km")
+            imd_active = bool(hazards.get("imd_warnings"))
+
+            min_zone_dist = None
+            nearest_zone_name = None
+            for z in geo.get("zones", []):
+                d = z.get("distance_km")
+                if d is not None and (min_zone_dist is None or d < min_zone_dist):
+                    min_zone_dist = d
+                    nearest_zone_name = z.get("name")
+
+            jev_dec = await get_jev_engine().evaluate_safety(
+                location_name=(ctx.location.name if ctx.location else "this position"),
+                swh_m=swh_val,
+                wind_kt=wind_val,
+                gust_kt=gust_val,
+                cyclone_alert=cyclone_present,
+                cyclone_dist_km=cyclone_distance,
+                nearest_boundary_dist_km=min_zone_dist,
+                restricted_zone_name=nearest_zone_name,
+                imd_warning_active=imd_active,
+            )
+
+            jev_band = {
+                "SAFE": RiskBand.SAFE,
+                "CAUTION": RiskBand.CAUTION,
+                "UNSAFE": RiskBand.UNSAFE,
+            }.get(jev_dec.safety_verdict, RiskBand.CAUTION)
+
+            findings.append(
+                RiskFinding(
+                    rule=f"jev_{jev_dec.action.lower()}",
+                    band=jev_band,
+                    detail=(
+                        f"TypeSafe AI Jev Judgment: {jev_dec.safety_verdict} ({jev_dec.action}). "
+                        f"Risk score: {jev_dec.risk_score:.0f}/100, Breach risk: {jev_dec.breach_probability*100:.0f}%, "
+                        f"Capsizing risk: {jev_dec.capsizing_probability*100:.0f}%. [{jev_dec.engine}]"
+                    ),
+                    evidence_ids=[],
+                )
+            )
+            hazards["jev_decision"] = {
+                "verdict": jev_dec.safety_verdict,
+                "action": jev_dec.action,
+                "risk_score": jev_dec.risk_score,
+                "breach_probability": jev_dec.breach_probability,
+                "capsizing_probability": jev_dec.capsizing_probability,
+                "engine": jev_dec.engine,
+                "confidence": jev_dec.confidence,
+                "rationale": jev_dec.rationale,
+            }
+
             band = RiskBand.UNKNOWN
             for finding in findings:
                 if BAND_ORDER[finding.band] > BAND_ORDER[band]:
@@ -360,6 +423,7 @@ class RiskAssessmentAgent:
                 headline=self._headline(band, ctx),
                 findings=findings,
                 window_advice=self._window_advice(ctx),
+                jev_decision=hazards["jev_decision"],
             )
             step.outcome = (
                 f"verdict {band.value} (score {score:.0f}/100) from "

@@ -198,6 +198,7 @@ class RiskAssessment(BaseModel):
     headline: str = ""
     findings: list[RiskFinding] = Field(default_factory=list)
     window_advice: str = ""
+    jev_decision: dict[str, Any] | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -211,6 +212,8 @@ class ChatRequest(BaseModel):
     lon: float | None = None
     place: str | None = None
     destination: str | None = None
+    language: str = "en"
+    audio_base64: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -230,6 +233,8 @@ class ChatResponse(BaseModel):
     generated_at: datetime = Field(default_factory=utcnow)
     llm_used: bool = False
     via_n8n: bool = False
+    language: str = "en"
+    audio_base64: str | None = None
 
 
 class AlertSubscription(BaseModel):
