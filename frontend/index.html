@@ -142,6 +142,15 @@
   @keyframes recPulse { from { opacity: 1; } to { opacity: 0.5; } }
   .play-audio-btn { margin-top: 8px; display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 11.5px; border-radius: 12px; background: #16364d; color: var(--accent); border: 1px solid var(--accent); cursor: pointer; }
   .play-audio-btn:hover { background: #1f4766; }
+  .play-audio-btn.playing { background: var(--accent); color: #05231f; font-weight: 600; }
+  .stop-speech {
+    padding: 4px 10px; font-size: 11.5px; border-radius: 12px; cursor: pointer;
+    background: #4b1f1f; color: #fca5a5; border: 1px solid #b91c1c;
+  }
+  .stop-speech:hover { background: #6b2b2b; color: #fff; }
+  /* clickable message bubble, for re-editing what was sent */
+  .msg.editable { cursor: pointer; }
+  .msg.editable:hover { border-color: var(--accent); }
   .select-lang { padding: 9px 12px; border-radius: 9px; border: 1px solid var(--line); background: #0d1a27; color: var(--text); font-size: 13px; }
   .spin { display: inline-block; width: 11px; height: 11px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: s .8s linear infinite; }
   @keyframes s { to { transform: rotate(360deg); } }
@@ -155,6 +164,8 @@
     <label style="display:flex;gap:5px;align-items:center;cursor:pointer">
       <input type="checkbox" id="useN8n" /> route via n8n
     </label>
+    <button type="button" id="stopSpeech" class="stop-speech" style="display:none"
+            title="Stop the answer that is being read out (Esc)">⏹ Stop voice</button>
     <span><span class="dot" id="dot"></span> <span id="statusText">checking</span></span>
   </div>
 </header>
@@ -542,6 +553,43 @@ function showSource(cite) {
   }
 }
 
+// --- speech playback -------------------------------------------------------
+// One player for the whole page. Two answers must never talk over each other,
+// and a long spoken answer has to be stoppable: on a boat you listen to the
+// first sentence, get what you need, and want silence.
+const speech = {
+  audio: null,
+  button: null,
+  stop() {
+    if (this.audio) {
+      this.audio.pause();
+      this.audio.currentTime = 0;
+      this.audio = null;
+    }
+    if (this.button) {
+      this.button.textContent = '🔊 Listen';
+      this.button.classList.remove('playing');
+      this.button = null;
+    }
+    $('stopSpeech').style.display = 'none';
+  },
+  play(base64, button) {
+    const resuming = this.button === button && this.audio;
+    this.stop();
+    if (resuming) return;   // clicking the same button again means "stop"
+    this.audio = new Audio('data:audio/wav;base64,' + base64);
+    this.button = button || null;
+    if (this.button) {
+      this.button.textContent = '⏹ Stop';
+      this.button.classList.add('playing');
+    }
+    $('stopSpeech').style.display = '';
+    this.audio.onended = () => this.stop();
+    this.audio.onerror = () => this.stop();
+    this.audio.play().catch(() => this.stop());
+  },
+};
+
 function addMessage(text, cls, extras) {
   const div = document.createElement('div');
   div.className = 'msg ' + cls;
@@ -583,20 +631,23 @@ function addMessage(text, cls, extras) {
   if (extras && extras.audio_base64) {
     const audioBtn = document.createElement('button');
     audioBtn.className = 'play-audio-btn';
-    audioBtn.innerHTML = '🔊 Play Coastal Voice (Sarvam Bulbul)';
-    audioBtn.onclick = () => {
-      const snd = new Audio('data:audio/wav;base64,' + extras.audio_base64);
-      snd.play();
+    audioBtn.textContent = '🔊 Listen';
+    audioBtn.title = 'Play the spoken answer. Click again to stop.';
+    audioBtn.onclick = (ev) => {
+      ev.stopPropagation();   // do not trigger the click-to-edit on the bubble
+      speech.play(extras.audio_base64, audioBtn);
     };
     div.appendChild(audioBtn);
+    if (extras.autoplay) speech.play(extras.audio_base64, audioBtn);
   }
   // A transcript the user can correct: click it to load it into the input box.
   if (extras && extras.retype) {
-    div.style.cursor = 'pointer';
-    div.title = 'misheard? click to put this in the box and edit it';
+    div.classList.add('editable');
+    div.title = 'click to put this back in the box and edit it';
     div.onclick = () => {
       $('input').value = extras.retype;
       $('input').focus();
+      $('input').setSelectionRange(extras.retype.length, extras.retype.length);
     };
   }
   if (extras && extras.followups && extras.followups.length) {    const wrap = document.createElement('div');
@@ -746,9 +797,18 @@ function metaHtml(data) {
 }
 
 async function ask(question) {
-  addMessage(question, 'user');
+  // Echo the typed question with the same treatment a spoken one gets: what was
+  // sent, in which language, and click to put it back in the box and edit it.
+  addMessage(question, 'user', {
+    meta: `<div class="meta"><span class="chip">⌨ typed</span>`
+      + `<span class="chip">${escape(($('langSelect').value || 'en').toUpperCase())}</span>`
+      + (pinned ? `<span class="chip" style="border-color:var(--accent);color:var(--accent)">📍 pinned position</span>` : '')
+      + `<span class="chip" title="click this message to edit and resend">tap to edit</span></div>`,
+    retype: question,
+  });
   $('input').value = '';
   $('send').disabled = true;
+  speech.stop();   // a new question means the previous answer stops talking
   const pending = addMessage('working through the agencies...', 'bot');
   pending.innerHTML = '<span class="spin"></span> retrieving from ISRO, INCOIS and IMD sources...';
   try {
@@ -855,6 +915,7 @@ $('audioFile').onchange = async (e) => {
 };
 
 async function sendVoice(blob, filename) {
+  speech.stop();   // stop whatever is being read out before asking again
   const pending = addMessage('processing voice audio...', 'bot');  pending.innerHTML = '<span class="spin"></span> filtering diesel engine noise & running Sarvam Saaras STT...';
   try {
     const formData = new FormData();
@@ -891,11 +952,8 @@ async function sendVoice(blob, filename) {
         retype: data.transcript,
       });
     }
-    addMessage(data.answer, 'bot', { meta: metaHtml(data), followups: data.followups, audio_base64: data.audio_base64, citations: data.citations });
+    addMessage(data.answer, 'bot', { meta: metaHtml(data), followups: data.followups, audio_base64: data.audio_base64, citations: data.citations, autoplay: true });
     renderEvidence(data); renderVerdict(data); renderModels(data); renderTrace(data); renderMap(data);
-    if (data.audio_base64) {
-      new Audio('data:audio/wav;base64,' + data.audio_base64).play();
-    }
   } catch (err) {
     pending.remove();
     addMessage('Voice query failed: ' + err.message, 'err');
@@ -928,6 +986,12 @@ $('form').onsubmit = (e) => {
 initMap();
 initLocationBar();
 checkHealth();
+
+// Stopping the voice must be reachable without hunting for the right bubble.
+$('stopSpeech').onclick = () => speech.stop();
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') speech.stop();
+});
 addMessage(
   'I am ORCA. Ask me about sea conditions, whether it is safe to go out, tides, '
   + 'cyclone and lightning alerts, potential fishing zones, maritime boundaries, '
