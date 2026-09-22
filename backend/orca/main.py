@@ -619,6 +619,7 @@ async def internal_synthesize(request: SynthesizeRequest) -> ChatResponse:
         risk=ctx.risk,
         evidence=ctx.evidence.all(),
         citations=ctx.citations,
+        briefing=ctx.briefing,
         trace=trace.steps,
         layers=ctx.layers,
         charts=ctx.charts,

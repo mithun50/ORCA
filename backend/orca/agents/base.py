@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Iterator, Protocol
 
 from ..schemas import (
+    Briefing,
     ChartSeries,
     Citation,
     Evidence,
@@ -162,6 +163,8 @@ class AgentContext:
     audience: "AudienceCall | None" = None
     #: numbered inline citations, populated by the synthesis agent
     citations: list[Citation] = field(default_factory=list)
+    #: the same answer as numbers only, grouped by source
+    briefing: Briefing = field(default_factory=Briefing)
     _citer: "Citer | None" = field(default=None, repr=False, compare=False)
 
     @property

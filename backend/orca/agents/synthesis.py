@@ -24,6 +24,7 @@ from ..schemas import Citation, Intent, RiskBand
 from ..services import Services
 from ..voice import get_voice_client
 from .base import AgentContext, EvidenceBook
+from .briefing import build_briefing
 from .ocean import beaufort, sea_state
 
 
@@ -254,9 +255,14 @@ class SynthesisAgent:
             ctx.findings.notes.append("")  # keep notes list non-empty for joins
             ctx.findings.notes = [n for n in ctx.findings.notes if n]
             ctx.citations = ctx.citer.citations()
+            # Same numbers, no sentences. Built from the citations so a briefing
+            # row points at the same source the prose does.
+            ctx.briefing = build_briefing(ctx, ctx.citations)
             step.outcome = (
                 f"{len(draft.split())} word draft from templates, "
-                f"{len(ctx.citations)} inline citations"
+                f"{len(ctx.citations)} inline citations, "
+                f"{len(ctx.briefing.ocean) + len(ctx.briefing.weather) + len(ctx.briefing.gis)} "
+                "briefing figures"
             )
             step.evidence_ids = [c.evidence_id for c in ctx.citations]
 

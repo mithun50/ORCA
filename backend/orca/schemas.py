@@ -236,6 +236,44 @@ class ChatRequest(BaseModel):
     audio_base64: str | None = None
 
 
+class BriefingItem(BaseModel):
+    """One number, as short as it can be said, with its risk flag and source."""
+
+    label: str            # "waves", "wind", "SST"
+    value: str            # already formatted, e.g. "1.1"
+    unit: str = ""        # "m", "kt", "degC"
+    note: str = ""        # very short qualifier, e.g. "building to 1.5"
+    #: "" | "watch" | "danger" - why this number matters, not just what it is
+    flag: str = ""
+    marker: int | None = None   # citation marker in the answer text
+    tier: Tier | None = None    # which tier the number came from
+
+
+class Briefing(BaseModel):
+    """The whole answer as numbers, grouped by where they come from.
+
+    The prose answer reads well but buries the figures a skipper actually acts
+    on. This is the same retrieved data with the sentences removed: four groups,
+    every entry a number, and the risk stated first rather than last.
+    """
+
+    risk_band: str = "unknown"
+    risk_score: float = 0.0
+    headline: str = ""
+    #: the rules that actually drove the band, one terse line each
+    drivers: list[str] = Field(default_factory=list)
+    #: sea state and water column
+    ocean: list[BriefingItem] = Field(default_factory=list)
+    #: atmosphere
+    weather: list[BriefingItem] = Field(default_factory=list)
+    #: position, boundaries, zones, shelter
+    gis: list[BriefingItem] = Field(default_factory=list)
+    #: which satellite and agency products the figures came from
+    satellite: list[BriefingItem] = Field(default_factory=list)
+    #: what could not be measured, so a gap is never mistaken for a safe value
+    missing: list[str] = Field(default_factory=list)
+
+
 class ModelRole(BaseModel):
     """Which model did which job on this request, and whether it actually ran."""
 
@@ -279,6 +317,8 @@ class ChatResponse(BaseModel):
     evidence: list[Evidence] = Field(default_factory=list)
     #: inline [n] markers in `answer`, resolved to the evidence behind each one
     citations: list[Citation] = Field(default_factory=list)
+    #: the same answer as numbers only, grouped by source, risk first
+    briefing: Briefing = Field(default_factory=Briefing)
     trace: list[TraceStep] = Field(default_factory=list)
     layers: list[MapLayer] = Field(default_factory=list)
     charts: list[ChartSeries] = Field(default_factory=list)

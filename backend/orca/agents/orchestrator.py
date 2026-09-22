@@ -404,6 +404,7 @@ class Orchestrator:
             risk=ctx.risk,
             evidence=ctx.evidence.all(),
             citations=ctx.citations,
+            briefing=ctx.briefing,
             trace=ctx.trace.steps,
             layers=ctx.layers,
             charts=ctx.charts,

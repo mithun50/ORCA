@@ -95,6 +95,32 @@
   .locbar button.armed { border-color: var(--accent); color: #05231f; background: var(--accent); }
   .loc-state { flex: 1 1 100%; font-size: 11px; color: var(--muted); }
   .loc-state.set { color: var(--accent); }
+  /* numbers-first briefing */
+  .brief { margin: 8px 0 4px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--bg); }
+  .bhead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 7px 10px; font-size: 12px; border-bottom: 1px solid var(--line); }
+  .bhead.unsafe { background: #3b1d1d; }
+  .bhead.caution { background: #3b2f18; }
+  .bhead.safe { background: #16331f; }
+  .bhead.unknown { background: var(--panel2); }
+  .bband { font-weight: 700; letter-spacing: .04em; font-size: 12.5px; }
+  .bhead.unsafe .bband { color: #fca5a5; }
+  .bhead.caution .bband { color: #fbbf24; }
+  .bhead.safe .bband { color: #6ee7b7; }
+  .bscore { font-size: 11px; color: var(--muted); }
+  .bwhy { font-size: 11.5px; color: var(--fg); opacity: .85; }
+  .bgroup { padding: 6px 10px; border-bottom: 1px solid var(--line); }
+  .bgroup:last-child { border-bottom: 0; }
+  .bgroup h5 { margin: 2px 0 5px; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+  .bgroup h5 span { opacity: .55; }
+  .bnum { display: flex; align-items: baseline; gap: 6px; padding: 2px 0; font-size: 12px; flex-wrap: wrap; }
+  .bl { flex: 0 0 96px; color: var(--muted); font-size: 11px; }
+  .bv { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .bu { margin-left: 2px; font-weight: 400; font-size: 10.5px; color: var(--muted); }
+  .bn { font-size: 10.5px; color: var(--muted); }
+  .bnum.f-watch .bv { color: #fbbf24; }
+  .bnum.f-danger .bv { color: #fca5a5; }
+  .bnum.f-danger { background: rgba(248,113,113,.07); border-radius: 5px; }
+  .bmissing { padding: 6px 10px; font-size: 11px; color: #fbbf24; background: rgba(251,191,36,.07); }
   /* citation markers inside an answer */
   .cite {
     display: inline-block; cursor: pointer; margin-left: 2px;
@@ -165,7 +191,7 @@
       <input type="checkbox" id="useN8n" /> route via n8n
     </label>
     <button type="button" id="stopSpeech" class="stop-speech" style="display:none"
-            title="Stop the answer that is being read out (Esc)">⏹ Stop voice</button>
+            title="Stop the answer that is being read out (Esc)">â¹ Stop voice</button>
     <span><span class="dot" id="dot"></span> <span id="statusText">checking</span></span>
   </div>
 </header>
@@ -175,25 +201,25 @@
     <div class="samples" id="samples"></div>
     <div class="locbar">
       <input type="text" id="coords" autocomplete="off" placeholder="Exact position: 13.08, 80.35  (or a harbour name)" />
-      <button type="button" id="gpsBtn" title="Use this device's GPS">📍 Use my GPS</button>
-      <button type="button" id="pickBtn" title="Click the map to drop a pin">🗺️ Pick on map</button>
-      <button type="button" id="clearLoc" title="Forget the pinned position">✕</button>
+      <button type="button" id="gpsBtn" title="Use this device's GPS">ðŸ“ Use my GPS</button>
+      <button type="button" id="pickBtn" title="Click the map to drop a pin">ðŸ—ºï¸ Pick on map</button>
+      <button type="button" id="clearLoc" title="Forget the pinned position">âœ•</button>
       <span id="locState" class="loc-state">no position pinned - place names in your question will be used</span>
     </div>
     <div class="messages" id="messages"></div>
     <form id="form">
       <select id="langSelect" class="select-lang" title="Select Response Language">
         <option value="en">English</option>
-        <option value="kn">ಕನ್ನಡ (Kannada)</option>
-        <option value="ta">தமிழ் (Tamil)</option>
-        <option value="te">తెలుగు (Telugu)</option>
-        <option value="ml">മലയാളം (Malayalam)</option>
-        <option value="hi">हिन्दी (Hindi)</option>
+        <option value="kn">à²•à²¨à³à²¨à²¡ (Kannada)</option>
+        <option value="ta">à®¤à®®à®¿à®´à¯ (Tamil)</option>
+        <option value="te">à°¤à±†à°²à±à°—à± (Telugu)</option>
+        <option value="ml">à´®à´²à´¯à´¾à´³à´‚ (Malayalam)</option>
+        <option value="hi">à¤¹à¤¿à¤¨à¥à¤¦à¥€ (Hindi)</option>
       </select>
       <input type="text" id="input" autocomplete="off"
              placeholder="Is it safe to venture out off Rameswaram tomorrow morning?" />
-      <button type="button" class="btn-icon" id="micBtn" title="Click to start speaking, click again to send (Sarvam AI)">🎤</button>
-      <button type="button" class="btn-icon" id="audioBtn" title="Upload a recorded audio file">📎</button>
+      <button type="button" class="btn-icon" id="micBtn" title="Click to start speaking, click again to send (Sarvam AI)">ðŸŽ¤</button>
+      <button type="button" class="btn-icon" id="audioBtn" title="Upload a recorded audio file">ðŸ“Ž</button>
       <input type="file" id="audioFile" accept="audio/*" style="display:none" />
       <button class="send" id="send" type="submit">Ask</button>
     </form>
@@ -343,7 +369,7 @@ function renderMap(data) {
         version: '1.3.0',
         attribution: layer.attribution || '',
       });
-      const name = `${layer.title}${layer.legend ? ' — ' + layer.legend : ''}`;
+      const name = `${layer.title}${layer.legend ? ' â€” ' + layer.legend : ''}`;
       overlayLayers[name] = wms;
       if (layer.visible_by_default) wms.addTo(map);
     }
@@ -567,7 +593,7 @@ const speech = {
       this.audio = null;
     }
     if (this.button) {
-      this.button.textContent = '🔊 Listen';
+      this.button.textContent = 'ðŸ”Š Listen';
       this.button.classList.remove('playing');
       this.button = null;
     }
@@ -580,7 +606,7 @@ const speech = {
     this.audio = new Audio('data:audio/wav;base64,' + base64);
     this.button = button || null;
     if (this.button) {
-      this.button.textContent = '⏹ Stop';
+      this.button.textContent = 'â¹ Stop';
       this.button.classList.add('playing');
     }
     $('stopSpeech').style.display = '';
@@ -594,6 +620,10 @@ function addMessage(text, cls, extras) {
   const div = document.createElement('div');
   div.className = 'msg ' + cls;
   if (extras && extras.meta) div.innerHTML = extras.meta;
+  if (extras && extras.briefingHtml) {
+    // Inserted before the prose so the figures are read first.
+    div.insertAdjacentHTML('beforeend', extras.briefingHtml);
+  }
 
   // Turn [1] and [3,4] into clickable chips that jump to the source. Built by
   // DOM node, never by string interpolation, so answer text can never inject.
@@ -631,7 +661,7 @@ function addMessage(text, cls, extras) {
   if (extras && extras.audio_base64) {
     const audioBtn = document.createElement('button');
     audioBtn.className = 'play-audio-btn';
-    audioBtn.textContent = '🔊 Listen';
+    audioBtn.textContent = 'ðŸ”Š Listen';
     audioBtn.title = 'Play the spoken answer. Click again to stop.';
     audioBtn.onclick = (ev) => {
       ev.stopPropagation();   // do not trigger the click-to-edit on the bubble
@@ -758,6 +788,42 @@ function locationPayload() {
   return {};
 }
 
+// Numbers-first briefing. The prose reads well but buries the figures, so this
+// is the same data with the sentences removed: risk first, then four groups.
+function renderBriefingHtml(data) {
+  const b = data.briefing;
+  if (!b || !b.risk_band) return '';
+  const TIER = { 'tier1-isro': 'ISRO', 'tier2-incois': 'INCOIS', 'tier3-imd': 'IMD',
+                 'tier4-fallback': 'model', 'derived': 'derived', 'seed': 'ref' };
+
+  const row = (i) => `<div class="bnum ${i.flag ? 'f-' + i.flag : ''}">
+      <span class="bl">${escape(i.label)}</span>
+      <span class="bv">${escape(i.value)}<span class="bu">${escape(i.unit || '')}</span></span>
+      ${i.note ? `<span class="bn">${escape(i.note)}</span>` : ''}
+      ${i.tier ? `<span class="tier ${i.tier}">${TIER[i.tier] || i.tier}</span>` : ''}
+      ${i.marker ? `<span class="cite cite-badge">[${i.marker}]</span>` : ''}
+    </div>`;
+
+  const group = (title, items) => !items || !items.length ? '' :
+    `<div class="bgroup"><h5>${title} <span>${items.length}</span></h5>${items.map(row).join('')}</div>`;
+
+  return `<div class="brief">
+    <div class="bhead ${escape(b.risk_band)}">
+      <span class="bband">${escape(b.risk_band.toUpperCase())}</span>
+      ${b.risk_score ? `<span class="bscore">${Number(b.risk_score).toFixed(0)}/100</span>` : ''}
+      ${b.drivers && b.drivers.length
+        ? `<span class="bwhy">${escape(b.drivers.join(' Â· '))}</span>`
+        : '<span class="bwhy">no threshold exceeded</span>'}
+    </div>
+    ${group('Ocean', b.ocean)}
+    ${group('Weather', b.weather)}
+    ${group('GIS', b.gis)}
+    ${group('Satellite', b.satellite)}
+    ${b.missing && b.missing.length
+      ? `<div class="bmissing">not measured: ${escape(b.missing.join(', '))}</div>` : ''}
+  </div>`;
+}
+
 function metaHtml(data) {
   const band = (data.risk && data.risk.band) || 'unknown';
   const AUDIENCE_LABEL = {
@@ -800,9 +866,9 @@ async function ask(question) {
   // Echo the typed question with the same treatment a spoken one gets: what was
   // sent, in which language, and click to put it back in the box and edit it.
   addMessage(question, 'user', {
-    meta: `<div class="meta"><span class="chip">⌨ typed</span>`
+    meta: `<div class="meta"><span class="chip">âŒ¨ typed</span>`
       + `<span class="chip">${escape(($('langSelect').value || 'en').toUpperCase())}</span>`
-      + (pinned ? `<span class="chip" style="border-color:var(--accent);color:var(--accent)">📍 pinned position</span>` : '')
+      + (pinned ? `<span class="chip" style="border-color:var(--accent);color:var(--accent)">ðŸ“ pinned position</span>` : '')
       + `<span class="chip" title="click this message to edit and resend">tap to edit</span></div>`,
     retype: question,
   });
@@ -826,7 +892,7 @@ async function ask(question) {
     if (!res.ok) throw new Error(`API returned ${res.status}: ${(await res.text()).slice(0, 200)}`);
     const data = await res.json();
     pending.remove();
-    addMessage(data.answer, 'bot', { meta: metaHtml(data), followups: data.followups, audio_base64: data.audio_base64, citations: data.citations });
+    addMessage(data.answer, 'bot', { meta: metaHtml(data), briefingHtml: renderBriefingHtml(data), followups: data.followups, audio_base64: data.audio_base64, citations: data.citations });
     renderEvidence(data); renderVerdict(data); renderModels(data); renderTrace(data); renderMap(data);
     if ((data.degraded_sources || []).length) {
       addMessage('Sources that degraded on this request: ' + data.degraded_sources.join(', '), 'bot');
@@ -880,7 +946,7 @@ micBtn.onclick = async () => {
   if (mediaRecorder && mediaRecorder.state === 'recording') {
     mediaRecorder.stop();
     micBtn.classList.remove('recording');
-    micBtn.textContent = '🎤';
+    micBtn.textContent = 'ðŸŽ¤';
     micBtn.title = 'Click to start speaking, click again to send';
     return;
   }
@@ -896,11 +962,11 @@ micBtn.onclick = async () => {
     };
     mediaRecorder.start();
     micBtn.classList.add('recording');
-    micBtn.textContent = '⏹️';
+    micBtn.textContent = 'â¹ï¸';
     micBtn.title = 'Recording. Click again to send.';
   } catch (err) {
     addMessage('Could not use the microphone: ' + err.message
-      + ' You can upload a recording with the 📎 button instead.', 'err');
+      + ' You can upload a recording with the ðŸ“Ž button instead.', 'err');
   }
 };
 
@@ -944,7 +1010,7 @@ async function sendVoice(blob, filename) {
     // likely failure on a boat, and it is invisible otherwise.
     if (data.transcript) {
       addMessage(data.transcript, 'user', {
-        meta: `<div class="meta"><span class="chip" style="border-color:#2dd4bf;color:#2dd4bf">🎤 heard`
+        meta: `<div class="meta"><span class="chip" style="border-color:#2dd4bf;color:#2dd4bf">ðŸŽ¤ heard`
           + (data.transcript_confidence
               ? ` (${(data.transcript_confidence * 100).toFixed(0)}% sure)` : '')
           + `</span><span class="chip">${escape((data.language || 'en').toUpperCase())}</span>`
@@ -952,7 +1018,7 @@ async function sendVoice(blob, filename) {
         retype: data.transcript,
       });
     }
-    addMessage(data.answer, 'bot', { meta: metaHtml(data), followups: data.followups, audio_base64: data.audio_base64, citations: data.citations, autoplay: true });
+    addMessage(data.answer, 'bot', { meta: metaHtml(data), briefingHtml: renderBriefingHtml(data), followups: data.followups, audio_base64: data.audio_base64, citations: data.citations, autoplay: true });
     renderEvidence(data); renderVerdict(data); renderModels(data); renderTrace(data); renderMap(data);
   } catch (err) {
     pending.remove();

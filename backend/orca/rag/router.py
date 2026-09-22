@@ -125,6 +125,10 @@ INTENT_DOMAINS: dict[Intent, tuple[KnowledgeDomain, ...]] = {
         KnowledgeDomain.WEATHER,
         KnowledgeDomain.OCEAN,
         KnowledgeDomain.HAZARD,
+        # Geospatial belongs here: `outside_eez` and `inside_restricted_zone` are
+        # both safety rules, and without this domain they could never fire, so a
+        # go/no-go answer silently ignored boundaries it had rules for.
+        KnowledgeDomain.GEOSPATIAL,
         KnowledgeDomain.ADVISORY,
     ),
     Intent.CONDITIONS_SUMMARY: (
