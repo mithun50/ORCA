@@ -341,7 +341,14 @@ async def chat_voice(
     stt_res = await voice_client.speech_to_text(audio_bytes, language_code=language)
     transcript = stt_res.transcript.strip()
     if not transcript:
-        raise HTTPException(status_code=422, detail="could not transcribe voice input")
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "I could not make out any words in that recording. Try again "
+                "closer to the microphone and away from the engine, or type the "
+                "question instead."
+            ),
+        )
 
     orchestrator: Orchestrator = get_orchestrator()
     chat_req = ChatRequest(
@@ -353,6 +360,10 @@ async def chat_voice(
         language=stt_res.detected_locale,
     )
     response = await orchestrator.handle(chat_req)
+    # Echo back what we heard. A misheard place name is the most likely failure
+    # on a boat, and it is invisible unless the transcript is returned.
+    response.transcript = transcript
+    response.transcript_confidence = stt_res.confidence
     return response
 
 

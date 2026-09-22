@@ -181,7 +181,9 @@
       </select>
       <input type="text" id="input" autocomplete="off"
              placeholder="Is it safe to venture out off Rameswaram tomorrow morning?" />
-      <button type="button" class="btn-icon" id="micBtn" title="Hold/Click to Speak (Sarvam AI STT)">🎤</button>
+      <button type="button" class="btn-icon" id="micBtn" title="Click to start speaking, click again to send (Sarvam AI)">🎤</button>
+      <button type="button" class="btn-icon" id="audioBtn" title="Upload a recorded audio file">📎</button>
+      <input type="file" id="audioFile" accept="audio/*" style="display:none" />
       <button class="send" id="send" type="submit">Ask</button>
     </form>
   </section>
@@ -588,8 +590,16 @@ function addMessage(text, cls, extras) {
     };
     div.appendChild(audioBtn);
   }
-  if (extras && extras.followups && extras.followups.length) {
-    const wrap = document.createElement('div');
+  // A transcript the user can correct: click it to load it into the input box.
+  if (extras && extras.retype) {
+    div.style.cursor = 'pointer';
+    div.title = 'misheard? click to put this in the box and edit it';
+    div.onclick = () => {
+      $('input').value = extras.retype;
+      $('input').focus();
+    };
+  }
+  if (extras && extras.followups && extras.followups.length) {    const wrap = document.createElement('div');
     wrap.className = 'followups';
     extras.followups.forEach(f => {
       const b = document.createElement('button');
@@ -811,6 +821,7 @@ micBtn.onclick = async () => {
     mediaRecorder.stop();
     micBtn.classList.remove('recording');
     micBtn.textContent = '🎤';
+    micBtn.title = 'Click to start speaking, click again to send';
     return;
   }
   try {
@@ -821,22 +832,33 @@ micBtn.onclick = async () => {
     mediaRecorder.onstop = async () => {
       const blob = new Blob(audioChunks, { type: 'audio/wav' });
       stream.getTracks().forEach(t => t.stop());
-      await sendVoice(blob);
+      await sendVoice(blob, 'deck_audio.wav');
     };
     mediaRecorder.start();
     micBtn.classList.add('recording');
     micBtn.textContent = '⏹️';
+    micBtn.title = 'Recording. Click again to send.';
   } catch (err) {
-    alert('Microphone recording error: ' + err.message);
+    addMessage('Could not use the microphone: ' + err.message
+      + ' You can upload a recording with the 📎 button instead.', 'err');
   }
 };
 
-async function sendVoice(blob) {
-  const pending = addMessage('processing voice audio...', 'bot');
-  pending.innerHTML = '<span class="spin"></span> filtering diesel engine noise & running Sarvam Saaras STT...';
+// Upload a recording instead of speaking live. Useful when the deck is too loud
+// to record cleanly, or to hand in a clip captured earlier.
+$('audioBtn').onclick = () => $('audioFile').click();
+$('audioFile').onchange = async (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  await sendVoice(file, file.name);
+  e.target.value = '';  // let the same file be chosen again
+};
+
+async function sendVoice(blob, filename) {
+  const pending = addMessage('processing voice audio...', 'bot');  pending.innerHTML = '<span class="spin"></span> filtering diesel engine noise & running Sarvam Saaras STT...';
   try {
     const formData = new FormData();
-    formData.append('file', blob, 'deck_audio.wav');
+    formData.append('file', blob, filename || 'deck_audio.wav');
     formData.append('language', $('langSelect').value);
     formData.append('session_id', SESSION);
     const loc = locationPayload();
@@ -847,9 +869,28 @@ async function sendVoice(blob) {
       method: 'POST',
       body: formData
     });
-    if (!res.ok) throw new Error(`Voice chat returned ${res.status}: ${(await res.text()).slice(0, 150)}`);
+    if (!res.ok) {
+      let detail = `voice request failed (${res.status})`;
+      try {
+        const body = await res.json();
+        if (body && body.detail) detail = body.detail;
+      } catch { /* keep the status-code message */ }
+      throw new Error(detail);
+    }
     const data = await res.json();
     pending.remove();
+    // Show what we heard before the answer. A misheard place name is the most
+    // likely failure on a boat, and it is invisible otherwise.
+    if (data.transcript) {
+      addMessage(data.transcript, 'user', {
+        meta: `<div class="meta"><span class="chip" style="border-color:#2dd4bf;color:#2dd4bf">🎤 heard`
+          + (data.transcript_confidence
+              ? ` (${(data.transcript_confidence * 100).toFixed(0)}% sure)` : '')
+          + `</span><span class="chip">${escape((data.language || 'en').toUpperCase())}</span>`
+          + `<span class="chip" title="not what you said? type it instead">tap to retype</span></div>`,
+        retype: data.transcript,
+      });
+    }
     addMessage(data.answer, 'bot', { meta: metaHtml(data), followups: data.followups, audio_base64: data.audio_base64, citations: data.citations });
     renderEvidence(data); renderVerdict(data); renderModels(data); renderTrace(data); renderMap(data);
     if (data.audio_base64) {

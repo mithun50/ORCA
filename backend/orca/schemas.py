@@ -288,6 +288,11 @@ class ChatResponse(BaseModel):
     llm_used: bool = False
     via_n8n: bool = False
     language: str = "en"
+    #: What a voice turn was heard as. The user cannot check an answer they
+    #: cannot see the question for, and a misheard word is the likeliest failure
+    #: in a noisy wheelhouse, so this is always shown back to them.
+    transcript: str = ""
+    transcript_confidence: float = 0.0
     #: who the answer was written for, and how confident that call was
     audience: str = "fisherman"
     audience_confidence: float = 0.0
